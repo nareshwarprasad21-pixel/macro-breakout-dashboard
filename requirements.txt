@@ -1,7 +1,7 @@
-streamlit
-pandas
-numpy
-plotly
-requests
-yfinance
-reportlab
+streamlit>=1.32,<2
+pandas>=2.0,<3
+numpy>=1.24,<3
+plotly>=5.18,<7
+requests>=2.31,<3
+yfinance>=0.2.40,<2
+reportlab>=4.0,<5

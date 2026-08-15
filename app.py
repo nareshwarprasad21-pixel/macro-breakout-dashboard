@@ -26,7 +26,9 @@ st.markdown("""
 .block-container {padding-top: 5rem !important; padding-bottom: 2rem;}
 [data-testid="stMainBlockContainer"] {padding-top: 5rem !important;}
 @media (max-width: 900px) {
-  .block-container, [data-testid="stMainBlockContainer"] {padding-top: 4.5rem !important;}
+  .block-container, [data-testid="stMainBlockContainer"] {padding: 4.25rem .8rem 1.5rem !important;}
+  [data-testid="stMetric"] {min-width: 0;}
+  .stDataFrame {overflow-x: auto;}
 }
 .metric-card {border:1px solid rgba(128,128,128,.25); border-radius:14px; padding:14px;}
 .small-note {font-size:.86rem; opacity:.75;}
@@ -59,22 +61,33 @@ def load_nifty500():
 def download_prices(tickers, period="max"):
     if not tickers:
         return pd.DataFrame()
-    return yf.download(
-        tickers=tickers,
-        period=period,
-        interval="1d",
-        group_by="ticker",
-        auto_adjust=False,
-        threads=True,
-        progress=False,
-    )
+    try:
+        return yf.download(
+            tickers=tickers,
+            period=period,
+            interval="1d",
+            group_by="ticker",
+            auto_adjust=False,
+            threads=True,
+            progress=False,
+            timeout=20,
+        )
+    except TypeError:  # compatibility with older yfinance releases
+        return yf.download(
+            tickers=tickers, period=period, interval="1d", group_by="ticker",
+            auto_adjust=False, threads=True, progress=False,
+        )
 
 def extract_one(raw, ticker, n_tickers):
     try:
-        if n_tickers == 1:
+        if n_tickers == 1 and not isinstance(raw.columns, pd.MultiIndex):
             df = raw.copy()
-        else:
+        elif isinstance(raw.columns, pd.MultiIndex) and ticker in raw.columns.get_level_values(0):
             df = raw[ticker].copy()
+        elif isinstance(raw.columns, pd.MultiIndex) and ticker in raw.columns.get_level_values(-1):
+            df = raw.xs(ticker, axis=1, level=-1).copy()
+        else:
+            return pd.DataFrame()
         df = df[[c for c in ["Open", "High", "Low", "Close", "Adj Close", "Volume"] if c in df.columns]]
         df = df.dropna(how="all")
         if "Close" not in df.columns or "High" not in df.columns:
@@ -138,7 +151,8 @@ def detect_breakouts(monthly, min_gap=26, lookback_signal_months=12):
         if prior.empty:
             return None
         old_ath = float(prior.max())
-        old_ath_date = prior.idxmax()
+        ath_dates = prior.index[np.isclose(prior.values, old_ath, rtol=1e-10, atol=1e-10)]
+        old_ath_date = ath_dates[-1] if len(ath_dates) else prior.idxmax()
         gap = month_diff(m.index[i], old_ath_date)
         close = float(closes.iloc[i])
         return {
@@ -179,9 +193,13 @@ def macro_snapshot():
         "Gold": "GC=F",
     }
     rows = []
+    try:
+        raw = download_prices(list(assets.values()), period="2y")
+    except Exception:
+        raw = pd.DataFrame()
     for name, ticker in assets.items():
         try:
-            d = yf.download(ticker, period="2y", interval="1d", auto_adjust=False, progress=False)
+            d = extract_one(raw, ticker, len(assets))
             if d.empty:
                 continue
             c = d["Close"]
@@ -1058,6 +1076,20 @@ def _theme_industry_match(theme, industry):
     }
     return any(k in s for k in mapping.get(theme, []))
 
+def value_migration_candidate_score(theme_score, live_score, breadth, stock_score=np.nan,
+                                    fundamental_score=np.nan):
+    """Availability-aware candidate heuristic; inputs are normalized to 0–100."""
+    components = [(theme_score, 0.30), (live_score * 10, 0.15), (breadth, 0.10)]
+    if pd.notna(stock_score):
+        components.append((stock_score * 10, 0.25))
+    if pd.notna(fundamental_score):
+        components.append((fundamental_score, 0.20))
+    available = [(float(v), w) for v, w in components if pd.notna(v)]
+    if not available:
+        return np.nan, 0
+    weight = sum(w for _, w in available)
+    return float(np.clip(sum(v * w for v, w in available) / weight, 0, 100)), len(available)
+
 def render_value_migration_page():
     st.title("🚀 Value Migration → Real-Data Multibagger Hunting Engine")
     st.caption(
@@ -1155,13 +1187,15 @@ def render_value_migration_page():
             cols = [c for c in ["Symbol","Status","Sector Score","Policy Score","Fundamental Score %","Pro Final Score"] if c in latest_ranked.columns]
             joined = cand.merge(latest_ranked[cols], on="Symbol", how="left")
             joined["Migration Theme Score"] = float(r["Value Migration Score"])
-            if "Pro Final Score" in joined.columns:
-                joined["VM + Stock Score"] = np.where(
-                    joined["Pro Final Score"].notna(),
-                    0.45*(joined["Migration Theme Score"]/10) + 0.55*joined["Pro Final Score"],
-                    np.nan
-                )
-                joined = joined.sort_values(["VM + Stock Score","Pro Final Score"], ascending=False, na_position="last")
+            scored = joined.apply(
+                lambda x: value_migration_candidate_score(
+                    r["Value Migration Score"], r["Live Market Score"],
+                    r["6M Positive Breadth %"], x.get("Pro Final Score", np.nan),
+                    x.get("Fundamental Score %", np.nan)), axis=1
+            )
+            joined["Candidate Heuristic %"] = scored.apply(lambda x: x[0])
+            joined["Inputs Available"] = scored.apply(lambda x: f"{x[1]}/5")
+            joined = joined.sort_values(["Candidate Heuristic %","Pro Final Score"], ascending=False, na_position="last")
             st.success("Latest main-dashboard scan is linked to this Value Migration page.")
             st.dataframe(joined, use_container_width=True, hide_index=True)
         else:
@@ -1174,6 +1208,11 @@ def render_value_migration_page():
     st.code(
         "Value Migration Score = 25% Policy/Capex + 20% 5–6Y Runway + "
         "15% Bottleneck + 10% Early-stage + 30% LIVE Market Confirmation"
+    )
+    st.caption(
+        "Candidate Heuristic = 30% theme + 15% live basket confirmation + 10% breadth + "
+        "25% stock confirmation + 20% fundamentals. Missing stock/fundamental inputs are excluded "
+        "and the remaining weights are normalized; Inputs Available makes that coverage explicit."
     )
     st.success(
         "MACRO CHANGE → POLICY/CAPEX → VALUE MIGRATION → BOTTLENECK → LIVE MARKET BREADTH → "
@@ -1224,8 +1263,10 @@ def graham_value_data(ticker):
                 pass
         return pd.DataFrame()
 
-    inc = get_frame("income_stmt", "financials")
-    bs = get_frame("balance_sheet")
+    # Attribute access and explicit getter calls exercise different yfinance
+    # code paths; either may work when the other Yahoo endpoint is throttled.
+    inc = get_frame("income_stmt", "financials", "get_income_stmt")
+    bs = get_frame("balance_sheet", "get_balance_sheet")
 
     try:
         div = t.dividends
@@ -1272,6 +1313,7 @@ def graham_value_data(ticker):
         "Total Stockholder Equity",
         "Common Stock Equity"
     ])
+    statement_shares = row(bs, ["Ordinary Shares Number", "Share Issued"])
 
     # CMP fallback order: info -> fast_info -> recent daily history.
     price = info.get("currentPrice", info.get("regularMarketPrice", np.nan))
@@ -1292,6 +1334,16 @@ def graham_value_data(ticker):
             h = t.history(period="5d", interval="1d", auto_adjust=False)
             if not h.empty:
                 price = float(pd.to_numeric(h["Close"], errors="coerce").dropna().iloc[-1])
+        except Exception:
+            pass
+    if pd.isna(price):
+        try:
+            h = yf.download(symbol, period="5d", interval="1d", auto_adjust=False,
+                            progress=False, threads=False, timeout=15)
+            close = h["Close"]
+            if isinstance(close, pd.DataFrame):
+                close = close.iloc[:, 0]
+            price = float(pd.to_numeric(close, errors="coerce").dropna().iloc[-1])
         except Exception:
             pass
 
@@ -1360,6 +1412,8 @@ def graham_value_data(ticker):
             shares = float(fi["shares"])
         except Exception:
             pass
+    if pd.isna(shares):
+        shares = latest(statement_shares)
 
     if pd.isna(bvps):
         eq = latest(equity)
@@ -1616,9 +1670,21 @@ if run:
     st.session_state["scan_results"] = res
     st.session_state["monthlies"] = monthlies
     st.session_state["scan_universe"] = uf
+    st.session_state["scan_settings"] = {
+        "min_gap": int(min_gap), "signal_window": int(signal_window),
+        "batch_size": int(batch_size), "industries": tuple(selected_industries),
+    }
 
 res = st.session_state.get("scan_results", pd.DataFrame())
 monthlies = st.session_state.get("monthlies", {})
+
+saved_settings = st.session_state.get("scan_settings")
+current_settings = {
+    "min_gap": int(min_gap), "signal_window": int(signal_window),
+    "batch_size": int(batch_size), "industries": tuple(selected_industries),
+}
+if not res.empty and saved_settings and saved_settings != current_settings:
+    st.warning("Scanner settings changed after the saved run. Run the scan again before relying on filtered results or rankings.")
 
 if not res.empty:
     recent = res[res["Months Since Signal"].fillna(999) <= signal_window].copy()
