@@ -23,7 +23,11 @@ NIFTY500_URLS = [
 
 st.markdown("""
 <style>
-.block-container {padding-top: 1rem; padding-bottom: 2rem;}
+.block-container {padding-top: 5rem !important; padding-bottom: 2rem;}
+[data-testid="stMainBlockContainer"] {padding-top: 5rem !important;}
+@media (max-width: 900px) {
+  .block-container, [data-testid="stMainBlockContainer"] {padding-top: 4.5rem !important;}
+}
 .metric-card {border:1px solid rgba(128,128,128,.25); border-radius:14px; padding:14px;}
 .small-note {font-size:.86rem; opacity:.75;}
 </style>
@@ -1091,22 +1095,164 @@ def make_chart(monthly, signal=None, name="Stock"):
     return fig
 
 
-# Top-level navigation: separate in-app page without requiring an extra GitHub file.
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def graham_value_data(ticker):
+    """Best-effort Graham inputs from Yahoo Finance. Long-history items remain N/A when unavailable."""
+    t = yf.Ticker(ticker)
+    try: info = t.info or {}
+    except Exception: info = {}
+    try: inc = t.financials.copy()
+    except Exception: inc = pd.DataFrame()
+    try: bs = t.balance_sheet.copy()
+    except Exception: bs = pd.DataFrame()
+    try: div = t.dividends
+    except Exception: div = pd.Series(dtype=float)
+
+    def row(df, names):
+        for n in names:
+            if not df.empty and n in df.index:
+                return pd.to_numeric(df.loc[n], errors='coerce').dropna().sort_index()
+        return pd.Series(dtype=float)
+
+    rev = row(inc,["Total Revenue","Operating Revenue"])
+    eps = row(inc,["Diluted EPS","Basic EPS"])
+    ca = row(bs,["Current Assets","Total Current Assets"])
+    cl = row(bs,["Current Liabilities","Total Current Liabilities"])
+    ltd = row(bs,["Long Term Debt And Capital Lease Obligation","Long Term Debt"])
+
+    price = info.get('currentPrice', info.get('regularMarketPrice', np.nan))
+    bvps = info.get('bookValue', np.nan)
+    shares = info.get('sharesOutstanding', np.nan)
+    sales = _latest(rev)
+    if pd.isna(sales): sales = info.get('totalRevenue', np.nan)
+    current_ratio = (_latest(ca)/_latest(cl)) if pd.notna(_latest(ca)) and pd.notna(_latest(cl)) and _latest(cl) else info.get('currentRatio', np.nan)
+    nwc = (_latest(ca)-_latest(cl)) if pd.notna(_latest(ca)) and pd.notna(_latest(cl)) else np.nan
+    long_debt = _latest(ltd)
+    if pd.isna(long_debt): long_debt = info.get('longTermDebt', np.nan)
+
+    eps_vals = eps.dropna()
+    avg3_eps = float(eps_vals.iloc[-3:].mean()) if len(eps_vals)>=3 else np.nan
+    pe3 = float(price/avg3_eps) if pd.notna(price) and pd.notna(avg3_eps) and avg3_eps>0 else np.nan
+    pb = float(price/bvps) if pd.notna(price) and pd.notna(bvps) and bvps>0 else np.nan
+    combined = pe3*pb if pd.notna(pe3) and pd.notna(pb) else np.nan
+    graham_no = np.sqrt(22.5*avg3_eps*bvps) if pd.notna(avg3_eps) and avg3_eps>0 and pd.notna(bvps) and bvps>0 else np.nan
+    mos = ((graham_no-price)/graham_no*100) if pd.notna(graham_no) and graham_no>0 and pd.notna(price) else np.nan
+
+    # Yahoo annual statements usually expose only ~4 years; do not pretend this proves 10Y EPS stability/growth.
+    eps_positive_10y = None
+    eps_growth_10y = None
+    div20 = None
+    if div is not None and len(div):
+        try:
+            annual = div.groupby(div.index.year).sum()
+            last20 = annual.tail(20)
+            if len(last20) >= 20:
+                div20 = bool((last20 > 0).all())
+        except Exception: pass
+
+    return dict(company=info.get('longName',ticker), price=price, sales=sales,
+                current_ratio=current_ratio, nwc=nwc, long_debt=long_debt,
+                eps_positive_10y=eps_positive_10y, dividend20=div20,
+                eps_growth_10y=eps_growth_10y, avg3_eps=avg3_eps, pe3=pe3,
+                bvps=bvps, pb=pb, combined=combined, graham_no=graham_no, mos=mos,
+                eps_years=len(eps_vals))
+
+def render_graham_page():
+    st.title("🧮 Graham Value Formula Scorecard")
+    st.caption("Screenshot formula table converted into an interactive dashboard. PASS = 1 point; unavailable long-history data is shown as N/A, not guessed.")
+    c1,c2,c3 = st.columns([2,1,1])
+    with c1:
+        sym = st.text_input("NSE Symbol", value="BALRAMCHIN", help="Examples: BALRAMCHIN, WAAREEENER, LT, BEL").strip().upper()
+    with c2:
+        g = st.number_input("Expected growth g (%)", min_value=0.0, max_value=100.0, value=15.0, step=1.0)
+    with c3:
+        y = st.number_input("AAA bond yield Y (%)", min_value=0.1, max_value=20.0, value=7.0, step=0.1)
+    if not st.button("🔎 Calculate Graham Score", type="primary", use_container_width=True):
+        st.info("Enter an NSE symbol and press **Calculate Graham Score**.")
+        return
+    with st.spinner("Fetching fundamentals and calculating Graham tests…"):
+        d=graham_value_data(sym+".NS")
+    growth_value = d['avg3_eps']*(8.5+2*g)*4.4/y if pd.notna(d['avg3_eps']) and d['avg3_eps']>0 else np.nan
+    growth_pass = pd.notna(growth_value) and pd.notna(d['price']) and growth_value>d['price']
+    tests=[
+      ("1", "Adequate Size", "Sales > ₹500 Cr", d['sales']/1e7 if pd.notna(d['sales']) else np.nan, pd.notna(d['sales']) and d['sales']>500e7, "₹ Cr"),
+      ("2", "Current Ratio", "Current Assets / Current Liabilities > 2", d['current_ratio'], pd.notna(d['current_ratio']) and d['current_ratio']>2, "x"),
+      ("3", "Debt Check", "Long-term Debt < Net Working Capital", d['long_debt']/1e7 if pd.notna(d['long_debt']) else np.nan, pd.notna(d['long_debt']) and pd.notna(d['nwc']) and d['long_debt']<d['nwc'], "₹ Cr LT debt"),
+      ("4", "Earnings Stability", "Positive EPS for last 10 years", np.nan, d['eps_positive_10y'], ""),
+      ("5", "Dividend Record", "Uninterrupted dividend, 20 years", np.nan, d['dividend20'], ""),
+      ("6", "Earnings Growth", "EPS +33% over 10 yrs (3-yr avg done end pe)", np.nan, d['eps_growth_10y'], ""),
+      ("7", "P/E Ratio", "< 15 (3-yr avg EPS pe)", d['pe3'], pd.notna(d['pe3']) and d['pe3']<15, "x"),
+      ("8", "P/B Ratio", "< 1.5", d['pb'], pd.notna(d['pb']) and d['pb']<1.5, "x"),
+      ("9", "Combined Test", "P/E × P/B < 22.5", d['combined'], pd.notna(d['combined']) and d['combined']<22.5, ""),
+      ("10", "Graham Number", "SQRT(22.5 × EPS × BVPS)", d['graham_no'], pd.notna(d['graham_no']) and pd.notna(d['price']) and d['graham_no']>d['price'], "₹"),
+      ("11", "Margin of Safety", "(Graham No. - CMP) / Graham No.", d['mos'], pd.notna(d['mos']) and d['mos']>0, "%"),
+      ("12", "Growth Formula", "[EPS × (8.5 + 2g) × 4.4] / Y", growth_value, growth_pass, "₹"),
+    ]
+    rows=[]; passed=0; assessed=0
+    for no,name,formula,val,ok,unit in tests:
+        available = ok is not None and (pd.notna(val) or no in ['4','5','6'])
+        if ok is None: available=False
+        if available:
+            assessed+=1; passed+=int(bool(ok))
+            status="🟢 PASS" if ok else "🔴 FAIL"
+        else: status="⚪ N/A"
+        if pd.isna(val): value="N/A"
+        elif unit=="₹ Cr": value=f"₹{val:,.0f} Cr"
+        elif unit=="₹ Cr LT debt": value=f"₹{val:,.0f} Cr (NWC ₹{d['nwc']/1e7:,.0f} Cr)" if pd.notna(d['nwc']) else f"₹{val:,.0f} Cr"
+        elif unit=="₹": value=f"₹{val:,.2f}"
+        elif unit=="%": value=f"{val:.1f}%"
+        elif unit=="x": value=f"{val:.2f}x"
+        else: value=f"{val:.2f}"
+        rows.append({"#":no,"Criteria":name,"Formula / Threshold":formula,"Value":value,"Score":status})
+    pct=100*passed/assessed if assessed else 0
+    m1,m2,m3,m4=st.columns(4)
+    m1.metric("Company",d['company']); m2.metric("CMP","N/A" if pd.isna(d['price']) else f"₹{d['price']:,.2f}")
+    m3.metric("Graham Score",f"{passed}/{assessed}"); m4.metric("Pass %",f"{pct:.0f}%")
+    st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
+    st.caption(f"3-year average EPS available: {d['eps_years']} annual periods in Yahoo statements. Criteria 4–6 require true 10-year history; they stay N/A unless reliable history is available. Growth Formula uses your inputs g={g:.1f}% and Y={y:.1f}%.")
+    st.warning("Graham score measures conservative value characteristics. A low score does not automatically mean a bad business, and a high score is not a buy signal. Use it alongside Value Migration, growth, fundamentals and the 26M breakout framework.")
+
+
+# Sidebar navigation — permanently visible and never clipped by Streamlit's top header.
 if "app_page" not in st.session_state:
     st.session_state["app_page"] = "main"
 
-nav1, nav2 = st.columns(2)
-with nav1:
-    if st.button("📊 Main Dashboard", use_container_width=True, type="primary" if st.session_state["app_page"]=="main" else "secondary"):
+with st.sidebar:
+    st.header("🧭 Dashboard Menu")
+
+    if st.button(
+        "📊 Main Dashboard",
+        use_container_width=True,
+        type="primary" if st.session_state["app_page"] == "main" else "secondary",
+    ):
         st.session_state["app_page"] = "main"
         st.rerun()
-with nav2:
-    if st.button("🚀 Value Migration / 10x–40x Hunt", use_container_width=True, type="primary" if st.session_state["app_page"]=="value_migration" else "secondary"):
+
+    if st.button(
+        "🚀 Value Migration / 10x–40x Hunt",
+        use_container_width=True,
+        type="primary" if st.session_state["app_page"] == "value_migration" else "secondary",
+    ):
         st.session_state["app_page"] = "value_migration"
         st.rerun()
 
+    if st.button(
+        "🧮 Graham Value Formula",
+        use_container_width=True,
+        type="primary" if st.session_state["app_page"] == "graham" else "secondary",
+    ):
+        st.session_state["app_page"] = "graham"
+        st.rerun()
+
+    st.divider()
+
 if st.session_state["app_page"] == "value_migration":
     render_value_migration_page()
+    st.stop()
+
+if st.session_state["app_page"] == "graham":
+    render_graham_page()
     st.stop()
 
 st.title(APP_TITLE)
