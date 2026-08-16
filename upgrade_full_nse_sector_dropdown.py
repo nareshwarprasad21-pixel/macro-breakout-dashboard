@@ -1,6 +1,7 @@
 from pathlib import Path
 
 PAGE = Path("pages/2_Final_Opportunities.py")
+STRICT_MARKER = "STRICT WEEKLY RS BREAKOUT ENGINE"
 
 
 def replace_once(text, old, new, label):
@@ -10,31 +11,411 @@ def replace_once(text, old, new, label):
     return text.replace(old, new, 1)
 
 
-def main():
-    text = PAGE.read_text(encoding="utf-8")
-    if "Full NSE 500 Sector Leadership" in text:
-        print("Final Opportunities already has full NSE 500 sector leadership")
-        return
+def strict_helpers():
+    return r'''# STRICT WEEKLY RS BREAKOUT ENGINE
+NIFTY500_URLS = [
+    "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv",
+    "https://niftyindices.com/IndexConstituent/ind_nifty500list.csv",
+]
 
-    text = replace_once(
-        text,
-        "import numpy as np\nimport pandas as pd\nimport streamlit as st\nimport yfinance as yf\n",
-        "import io\nimport numpy as np\nimport pandas as pd\nimport requests\nimport streamlit as st\nimport yfinance as yf\n",
-        "imports",
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def load_official_nifty500():
+    headers = {"User-Agent": "Mozilla/5.0"}
+    last_error = None
+    for url in NIFTY500_URLS:
+        try:
+            r = requests.get(url, headers=headers, timeout=20)
+            r.raise_for_status()
+            df = pd.read_csv(io.StringIO(r.text))
+            if "Symbol" not in df.columns:
+                continue
+            if "Industry" not in df.columns:
+                df["Industry"] = "Unknown"
+            if "Company Name" not in df.columns:
+                df["Company Name"] = df["Symbol"]
+            df["Symbol"] = df["Symbol"].astype(str).str.strip()
+            df["Ticker"] = df["Symbol"] + ".NS"
+            return df[["Company Name", "Industry", "Symbol", "Ticker"]].drop_duplicates("Symbol")
+        except Exception as exc:
+            last_error = exc
+    raise RuntimeError(f"NIFTY 500 constituent feed unavailable: {last_error}")
+
+
+def _weekly_close(raw, ticker, total):
+    try:
+        if raw is None or raw.empty:
+            return pd.Series(dtype=float)
+        if total == 1 and not isinstance(raw.columns, pd.MultiIndex):
+            d = raw
+        elif isinstance(raw.columns, pd.MultiIndex) and ticker in raw.columns.get_level_values(0):
+            d = raw[ticker]
+        elif isinstance(raw.columns, pd.MultiIndex) and ticker in raw.columns.get_level_values(-1):
+            d = raw.xs(ticker, axis=1, level=-1)
+        else:
+            return pd.Series(dtype=float)
+        s = pd.to_numeric(d["Close"], errors="coerce").dropna()
+        s.index = pd.to_datetime(s.index).tz_localize(None)
+        return s.sort_index()
+    except Exception:
+        return pd.Series(dtype=float)
+
+
+def _period_return_weekly(c, weeks):
+    c = pd.to_numeric(c, errors="coerce").dropna()
+    if len(c) <= weeks:
+        return np.nan
+    base = safe_float(c.iloc[-weeks - 1])
+    last = safe_float(c.iloc[-1])
+    return (last / base - 1) * 100 if pd.notna(base) and base else np.nan
+
+
+def _recent_breakout_info(series, lookback=52, recent_weeks=8):
+    s = pd.to_numeric(series, errors="coerce").dropna()
+    if len(s) < lookback + 2:
+        return False, False, np.nan, np.nan
+    prior_high = s.shift(1).rolling(lookback, min_periods=lookback).max()
+    signal = s > prior_high
+    recent_signal = signal.iloc[-recent_weeks:]
+    if bool(recent_signal.any()):
+        positions = np.flatnonzero(recent_signal.values)
+        weeks_since = len(recent_signal) - 1 - int(positions[-1])
+        breakout_level = safe_float(prior_high.iloc[-1])
+        breakout_pct = (safe_float(s.iloc[-1]) / breakout_level - 1) * 100 if pd.notna(breakout_level) and breakout_level else np.nan
+        return bool(signal.iloc[-1]), True, weeks_since, breakout_pct
+    breakout_level = safe_float(prior_high.iloc[-1])
+    breakout_pct = (safe_float(s.iloc[-1]) / breakout_level - 1) * 100 if pd.notna(breakout_level) and breakout_level else np.nan
+    return bool(signal.iloc[-1]), False, np.nan, breakout_pct
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def strict_weekly_sector_leadership():
+    """Full NIFTY 500 sector leadership on WEEKLY data relative to NIFTY 50.
+
+    A sector is a STRICT leader only when its equal-weight sector proxy / NIFTY 50
+    relative-strength line has broken its prior 52-week high now or during the last
+    8 completed weekly observations, 13W and 26W relative strength are positive,
+    and at least half its available stocks beat NIFTY 50 over 13 weeks.
+    """
+    universe = load_official_nifty500()
+    tickers = universe["Ticker"].tolist()
+    stock_series = {}
+    chunk_size = 80
+    for start in range(0, len(tickers), chunk_size):
+        chunk = tickers[start:start + chunk_size]
+        try:
+            raw = yf.download(
+                tickers=chunk, period="5y", interval="1wk", group_by="ticker",
+                auto_adjust=True, threads=True, progress=False, timeout=35,
+            )
+        except TypeError:
+            raw = yf.download(
+                tickers=chunk, period="5y", interval="1wk", group_by="ticker",
+                auto_adjust=True, threads=True, progress=False,
+            )
+        except Exception:
+            raw = pd.DataFrame()
+        for ticker in chunk:
+            c = _weekly_close(raw, ticker, len(chunk))
+            if len(c) >= 60:
+                stock_series[ticker] = c
+
+    try:
+        nifty_raw = yf.download("^NSEI", period="5y", interval="1wk", auto_adjust=True, progress=False, timeout=30)
+    except TypeError:
+        nifty_raw = yf.download("^NSEI", period="5y", interval="1wk", auto_adjust=True, progress=False)
+    if isinstance(nifty_raw.columns, pd.MultiIndex):
+        nifty_raw.columns = nifty_raw.columns.get_level_values(0)
+    nifty = pd.to_numeric(nifty_raw.get("Close"), errors="coerce").dropna()
+    nifty.index = pd.to_datetime(nifty.index).tz_localize(None)
+    nifty = nifty.sort_index()
+    if len(nifty) < 60:
+        raise RuntimeError("NIFTY 50 weekly history unavailable")
+
+    nifty_r13 = _period_return_weekly(nifty, 13)
+    nifty_r26 = _period_return_weekly(nifty, 26)
+    meta = universe.set_index("Ticker")
+    stock_rows = []
+    sector_rows = []
+
+    for industry, group in universe.groupby("Industry"):
+        series_map = {t: stock_series[t] for t in group["Ticker"] if t in stock_series}
+        if not series_map:
+            continue
+        close_panel = pd.concat(series_map, axis=1).sort_index()
+        weekly_returns = close_panel.pct_change(fill_method=None)
+        sector_weekly_ret = weekly_returns.median(axis=1, skipna=True).dropna()
+        if len(sector_weekly_ret) < 55:
+            continue
+        sector_proxy = (1 + sector_weekly_ret).cumprod() * 100.0
+        n = nifty.reindex(sector_proxy.index).ffill().dropna()
+        common = sector_proxy.index.intersection(n.index)
+        sector_proxy = sector_proxy.loc[common]
+        n = n.loc[common]
+        if len(common) < 55:
+            continue
+        nifty_proxy = n / n.iloc[0] * 100.0
+        rs_line = sector_proxy / nifty_proxy * 100.0
+        fresh, recent, weeks_since, rs_breakout_pct = _recent_breakout_info(rs_line, 52, 8)
+        rs13 = _period_return_weekly(rs_line, 13)
+        rs26 = _period_return_weekly(rs_line, 26)
+
+        beat13 = []
+        beat26 = []
+        for ticker, c in series_map.items():
+            r13 = _period_return_weekly(c, 13)
+            r26 = _period_return_weekly(c, 26)
+            b13 = bool(pd.notna(r13) and pd.notna(nifty_r13) and r13 > nifty_r13)
+            b26 = bool(pd.notna(r26) and pd.notna(nifty_r26) and r26 > nifty_r26)
+            beat13.append(b13)
+            beat26.append(b26)
+            stock_rows.append({
+                "Symbol": meta.loc[ticker, "Symbol"], "Company": meta.loc[ticker, "Company Name"],
+                "Industry": industry, "Ticker": ticker,
+                "13W %": r13, "26W %": r26,
+                "RS vs NIFTY 13W %": r13 - nifty_r13 if pd.notna(r13) and pd.notna(nifty_r13) else np.nan,
+                "RS vs NIFTY 26W %": r26 - nifty_r26 if pd.notna(r26) and pd.notna(nifty_r26) else np.nan,
+                "Beat NIFTY 13W": b13, "Beat NIFTY 26W": b26,
+            })
+
+        breadth13 = 100 * np.mean(beat13) if beat13 else np.nan
+        breadth26 = 100 * np.mean(beat26) if beat26 else np.nan
+        strict = bool(recent and pd.notna(rs13) and rs13 > 0 and pd.notna(rs26) and rs26 > 0 and pd.notna(breadth13) and breadth13 >= 50)
+        recency_score = 10 if fresh else (max(2, 9 - safe_float(weeks_since)) if recent else 0)
+        score = float(np.clip(
+            0.35 * recency_score +
+            0.25 * (5 + 5 * np.tanh((rs13 if pd.notna(rs13) else -10) / 8)) +
+            0.20 * (5 + 5 * np.tanh((rs26 if pd.notna(rs26) else -10) / 12)) +
+            0.20 * ((breadth13 if pd.notna(breadth13) else 0) / 10), 0, 10
+        ))
+        status = "🟢 FRESH RS BREAKOUT" if strict and fresh else "🟢 RECENT RS BREAKOUT" if strict else "🟡 WATCH" if recent else "⚪ NO RS BREAKOUT"
+        sector_rows.append({
+            "Industry": industry, "Stocks": len(series_map), "Strict Leader": strict,
+            "RS Breakout Status": status, "Weeks Since RS Breakout": weeks_since,
+            "RS Breakout %": rs_breakout_pct, "RS 13W %": rs13, "RS 26W %": rs26,
+            "13W Breadth vs NIFTY %": breadth13, "26W Breadth vs NIFTY %": breadth26,
+            "Sector Score": score,
+        })
+
+    sectors = pd.DataFrame(sector_rows)
+    stocks = pd.DataFrame(stock_rows)
+    if sectors.empty:
+        return universe, stocks, sectors
+    sectors["_leader"] = sectors["Strict Leader"].astype(int)
+    sectors["_weeks"] = sectors["Weeks Since RS Breakout"].fillna(999)
+    sectors = sectors.sort_values(["_leader", "_weeks", "Sector Score"], ascending=[False, True, False]).drop(columns=["_leader", "_weeks"]).reset_index(drop=True)
+    return universe, stocks, sectors
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def strict_stock_breakout_snapshot(ticker):
+    """Weekly stock setup: catch 2Y/3Y breakout, recent breakout, or within 5% of breakout."""
+    t = yf.Ticker(ticker)
+    try:
+        info = t.info or {}
+    except Exception:
+        info = {}
+    try:
+        h = t.history(period="10y", interval="1wk", auto_adjust=False)
+    except Exception:
+        h = pd.DataFrame()
+    try:
+        n = yf.download("^NSEI", period="3y", interval="1wk", auto_adjust=True, progress=False)
+        if isinstance(n.columns, pd.MultiIndex):
+            n.columns = n.columns.get_level_values(0)
+        nifty = pd.to_numeric(n.get("Close"), errors="coerce").dropna()
+    except Exception:
+        nifty = pd.Series(dtype=float)
+
+    out = {"Company": info.get("longName") or info.get("shortName") or ticker.replace(".NS", ""),
+           "CMP": safe_float(info.get("currentPrice", info.get("regularMarketPrice"))),
+           "Setup": "N/A", "2Y Breakout %": np.nan, "3Y Breakout %": np.nan,
+           "Weeks Since 2Y Breakout": np.nan, "RS vs NIFTY 13W %": np.nan,
+           "RS vs NIFTY 26W %": np.nan, "Fundamental Score %": np.nan,
+           "Fundamental Checks": 0, "Trailing PE": np.nan}
+    if h is not None and not h.empty and "Close" in h.columns and "High" in h.columns:
+        h.index = pd.to_datetime(h.index).tz_localize(None)
+        close = pd.to_numeric(h["Close"], errors="coerce").dropna()
+        high = pd.to_numeric(h["High"], errors="coerce").reindex(close.index)
+        if pd.isna(out["CMP"]) and len(close):
+            out["CMP"] = safe_float(close.iloc[-1])
+        prior2 = high.shift(1).rolling(104, min_periods=104).max()
+        prior3 = high.shift(1).rolling(156, min_periods=156).max()
+        sig2 = close > prior2
+        recent2 = sig2.iloc[-8:] if len(sig2) >= 8 else sig2
+        if bool(recent2.any()):
+            pos = np.flatnonzero(recent2.values)[-1]
+            out["Weeks Since 2Y Breakout"] = len(recent2) - 1 - int(pos)
+        lev2 = safe_float(prior2.iloc[-1]) if len(prior2) else np.nan
+        lev3 = safe_float(prior3.iloc[-1]) if len(prior3) else np.nan
+        last = safe_float(close.iloc[-1])
+        out["2Y Breakout %"] = (last / lev2 - 1) * 100 if pd.notna(lev2) and lev2 else np.nan
+        out["3Y Breakout %"] = (last / lev3 - 1) * 100 if pd.notna(lev3) and lev3 else np.nan
+        if pd.notna(out["3Y Breakout %"]) and out["3Y Breakout %"] > 0:
+            out["Setup"] = "🔥 3Y+ MULTIYEAR BREAKOUT"
+        elif pd.notna(out["Weeks Since 2Y Breakout"]) and out["Weeks Since 2Y Breakout"] <= 8:
+            out["Setup"] = "✅ RECENT 2Y BREAKOUT"
+        elif pd.notna(out["2Y Breakout %"]) and -5 <= out["2Y Breakout %"] <= 0:
+            out["Setup"] = "👀 WITHIN 5% OF 2Y BREAKOUT"
+        else:
+            out["Setup"] = "Below multiyear breakout zone"
+        sr13 = _period_return_weekly(close, 13)
+        sr26 = _period_return_weekly(close, 26)
+        nr13 = _period_return_weekly(nifty, 13)
+        nr26 = _period_return_weekly(nifty, 26)
+        out["RS vs NIFTY 13W %"] = sr13 - nr13 if pd.notna(sr13) and pd.notna(nr13) else np.nan
+        out["RS vs NIFTY 26W %"] = sr26 - nr26 if pd.notna(sr26) and pd.notna(nr26) else np.nan
+    try:
+        fs, assessed, pe = fundamental_quality(ticker)
+        out["Fundamental Score %"] = fs
+        out["Fundamental Checks"] = assessed
+        out["Trailing PE"] = pe
+    except Exception:
+        pass
+    return out
+
+
+'''
+
+
+def strict_ui():
+    return r'''st.divider()
+st.subheader("🎯 Strict Weekly Sector RS Breakout → Stock Analyzer")
+st.caption(
+    "STRICT rule: every NIFTY 500 industry is compared with NIFTY 50 on WEEKLY data. A sector becomes a leader only when its "
+    "relative-strength line (sector proxy ÷ NIFTY 50) breaks its prior 52-week RS high now or within the last 8 weeks, both 13W and 26W RS are positive, "
+    "and at least 50% of its stocks outperform NIFTY 50 over 13 weeks. A high momentum score alone CANNOT make a sector leader."
+)
+
+try:
+    with st.spinner("Scanning all NIFTY 500 sectors on weekly relative strength vs NIFTY 50…"):
+        nse_universe, strict_stocks, strict_sectors = strict_weekly_sector_leadership()
+except Exception as exc:
+    nse_universe, strict_stocks, strict_sectors = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    st.warning(f"Strict weekly sector feed is temporarily unavailable: {exc}")
+
+if not strict_sectors.empty:
+    strict_leaders = strict_sectors[strict_sectors["Strict Leader"]].copy()
+    strict_map = strict_sectors.set_index("Industry")["Sector Score"].to_dict()
+    st.session_state["strict_sector_scores"] = strict_map
+    leader_name = strict_leaders.iloc[0]["Industry"] if not strict_leaders.empty else "NO STRICT LEADER"
+    leader_score = strict_leaders.iloc[0]["Sector Score"] if not strict_leaders.empty else np.nan
+    x1, x2, x3, x4 = st.columns(4)
+    x1.metric("Strict Leader", leader_name)
+    x2.metric("Leader Score", "N/A" if pd.isna(leader_score) else f"{leader_score:.1f}/10")
+    x3.metric("NIFTY 500 Stocks", int(strict_stocks["Symbol"].nunique()))
+    x4.metric("Strict Leaders Now", len(strict_leaders))
+
+    if strict_leaders.empty:
+        st.warning("No sector currently satisfies ALL strict weekly RS-breakout conditions. The table below is watchlist only; no sector is labelled leader.")
+    else:
+        st.success(f"Current strict leader: **{leader_name}**. It has a fresh/recent weekly RS breakout versus NIFTY 50 with positive 13W/26W relative strength and required breadth.")
+
+    sector_cols = ["Industry", "Stocks", "Strict Leader", "RS Breakout Status", "Weeks Since RS Breakout",
+                   "RS Breakout %", "RS 13W %", "RS 26W %", "13W Breadth vs NIFTY %", "26W Breadth vs NIFTY %", "Sector Score"]
+    st.dataframe(
+        strict_sectors[sector_cols], use_container_width=True, hide_index=True,
+        column_config={
+            "Sector Score": st.column_config.ProgressColumn(min_value=0, max_value=10, format="%.1f"),
+            "13W Breadth vs NIFTY %": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f%%"),
+            "26W Breadth vs NIFTY %": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f%%"),
+        },
     )
 
-    anchor = '''def _close_series(raw, ticker, total):\n    try:\n        if raw.empty:\n            return pd.Series(dtype=float)\n        if total == 1 and not isinstance(raw.columns, pd.MultiIndex):\n            d = raw\n        elif isinstance(raw.columns, pd.MultiIndex) and ticker in raw.columns.get_level_values(0):\n            d = raw[ticker]\n        elif isinstance(raw.columns, pd.MultiIndex) and ticker in raw.columns.get_level_values(-1):\n            d = raw.xs(ticker, axis=1, level=-1)\n        else:\n            return pd.Series(dtype=float)\n        return pd.to_numeric(d[\"Close\"], errors=\"coerce\").dropna()\n    except Exception:\n        return pd.Series(dtype=float)\n\n\n'''
+    selectable_sectors = strict_leaders["Industry"].tolist() if not strict_leaders.empty else strict_sectors.head(5)["Industry"].tolist()
+    chosen_sector = st.selectbox(
+        "Select strict leader sector" if not strict_leaders.empty else "No strict leader — select a WATCH sector only",
+        selectable_sectors,
+        help="When strict leaders exist, only sectors that pass every weekly RS-breakout rule are offered here."
+    )
+    sector_stock_rows = strict_stocks[strict_stocks["Industry"] == chosen_sector].copy()
+    if not sector_stock_rows.empty:
+        # Fast first-pass ranking to put relative-strength stocks at the top before detailed weekly breakout analysis.
+        sector_stock_rows["RS Rank Score"] = (
+            sector_stock_rows["RS vs NIFTY 13W %"].fillna(-50) * 0.6 +
+            sector_stock_rows["RS vs NIFTY 26W %"].fillna(-50) * 0.4
+        )
+        sector_stock_rows = sector_stock_rows.sort_values("RS Rank Score", ascending=False)
+        st.markdown("#### Stocks inside selected sector — relative strength first")
+        st.dataframe(
+            sector_stock_rows[["Symbol", "Company", "13W %", "26W %", "RS vs NIFTY 13W %", "RS vs NIFTY 26W %", "RS Rank Score"]],
+            use_container_width=True, hide_index=True,
+        )
+        options = sector_stock_rows.apply(lambda r: f"{r['Symbol']} — {r['Company']}", axis=1).tolist()
+        selected_label = st.selectbox("Select stock for strict breakout analysis", options)
+        selected_symbol = selected_label.split(" — ", 1)[0]
+        if st.button(f"🔎 Analyse {selected_symbol} weekly breakout", type="primary", use_container_width=True):
+            with st.spinner(f"Checking 2Y/3Y weekly breakout levels for {selected_symbol}…"):
+                snap = strict_stock_breakout_snapshot(selected_symbol + ".NS")
+            st.session_state["strict_selected_stock_snapshot"] = (chosen_sector, selected_symbol, snap)
+        saved = st.session_state.get("strict_selected_stock_snapshot")
+        if saved and saved[0] == chosen_sector and saved[1] == selected_symbol:
+            snap = saved[2]
+            st.markdown(f"### {selected_symbol} — {snap['Company']}")
+            st.success(f"Setup: **{snap['Setup']}**") if ("BREAKOUT" in str(snap['Setup']) or "WITHIN 5%" in str(snap['Setup'])) else st.info(f"Setup: **{snap['Setup']}**")
+            a1, a2, a3, a4 = st.columns(4)
+            a1.metric("CMP", "N/A" if pd.isna(snap["CMP"]) else f"₹{snap['CMP']:,.2f}")
+            a2.metric("2Y Breakout Distance", "N/A" if pd.isna(snap["2Y Breakout %"]) else f"{snap['2Y Breakout %']:+.2f}%")
+            a3.metric("3Y Breakout Distance", "N/A" if pd.isna(snap["3Y Breakout %"]) else f"{snap['3Y Breakout %']:+.2f}%")
+            a4.metric("Weeks Since 2Y Breakout", "N/A" if pd.isna(snap["Weeks Since 2Y Breakout"]) else int(snap["Weeks Since 2Y Breakout"]))
+            b1, b2, b3, b4 = st.columns(4)
+            b1.metric("RS vs NIFTY 13W", "N/A" if pd.isna(snap["RS vs NIFTY 13W %"]) else f"{snap['RS vs NIFTY 13W %']:+.1f}%")
+            b2.metric("RS vs NIFTY 26W", "N/A" if pd.isna(snap["RS vs NIFTY 26W %"]) else f"{snap['RS vs NIFTY 26W %']:+.1f}%")
+            b3.metric("Fundamental Score", "N/A" if pd.isna(snap["Fundamental Score %"]) else f"{snap['Fundamental Score %']:.0f}%")
+            b4.metric("Trailing PE", "N/A" if pd.isna(snap["Trailing PE"]) else f"{snap['Trailing PE']:.1f}x")
+            st.caption("Stock trigger is weekly: priority = 3Y+ breakout → recent 2Y breakout (last 8 weeks) → within 5% of 2Y breakout. Confirm on completed weekly candles before acting.")
 
-    addition = '''NIFTY500_URLS = [\n    \"https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv\",\n    \"https://niftyindices.com/IndexConstituent/ind_nifty500list.csv\",\n]\n\n\n@st.cache_data(ttl=86400, show_spinner=False)\ndef load_official_nifty500():\n    headers = {\"User-Agent\": \"Mozilla/5.0\"}\n    last_error = None\n    for url in NIFTY500_URLS:\n        try:\n            r = requests.get(url, headers=headers, timeout=20)\n            r.raise_for_status()\n            df = pd.read_csv(io.StringIO(r.text))\n            if \"Symbol\" not in df.columns:\n                continue\n            if \"Industry\" not in df.columns:\n                df[\"Industry\"] = \"Unknown\"\n            if \"Company Name\" not in df.columns:\n                df[\"Company Name\"] = df[\"Symbol\"]\n            df[\"Symbol\"] = df[\"Symbol\"].astype(str).str.strip()\n            df[\"Ticker\"] = df[\"Symbol\"] + \".NS\"\n            return df[[\"Company Name\", \"Industry\", \"Symbol\", \"Ticker\"]].drop_duplicates(\"Symbol\")\n        except Exception as exc:\n            last_error = exc\n    raise RuntimeError(f\"NIFTY 500 constituent feed unavailable: {last_error}\")\n\n\ndef _returns_from_close(c):\n    c = pd.to_numeric(c, errors=\"coerce\").dropna()\n    if len(c) < 70:\n        return np.nan, np.nan, np.nan\n    last = safe_float(c.iloc[-1])\n    r3 = (last / safe_float(c.iloc[-64]) - 1) * 100 if len(c) > 63 else np.nan\n    r6 = (last / safe_float(c.iloc[-127]) - 1) * 100 if len(c) > 126 else np.nan\n    r12 = (last / safe_float(c.iloc[-253]) - 1) * 100 if len(c) > 252 else np.nan\n    return r3, r6, r12\n\n\n@st.cache_data(ttl=3600, show_spinner=False)\ndef full_nifty500_sector_leadership():\n    universe = load_official_nifty500()\n    rows = []\n    tickers = universe[\"Ticker\"].tolist()\n    chunk_size = 80\n    for start in range(0, len(tickers), chunk_size):\n        chunk = tickers[start:start + chunk_size]\n        try:\n            raw = yf.download(\n                tickers=chunk, period=\"15mo\", interval=\"1d\", group_by=\"ticker\",\n                auto_adjust=True, threads=True, progress=False, timeout=30,\n            )\n        except TypeError:\n            raw = yf.download(\n                tickers=chunk, period=\"15mo\", interval=\"1d\", group_by=\"ticker\",\n                auto_adjust=True, threads=True, progress=False,\n            )\n        except Exception:\n            raw = pd.DataFrame()\n\n        meta = universe[universe[\"Ticker\"].isin(chunk)].set_index(\"Ticker\")\n        for ticker in chunk:\n            c = _close_series(raw, ticker, len(chunk))\n            r3, r6, r12 = _returns_from_close(c)\n            if pd.isna(r3) and pd.isna(r6):\n                continue\n            info = meta.loc[ticker]\n            rows.append({\n                \"Symbol\": info[\"Symbol\"],\n                \"Company\": info[\"Company Name\"],\n                \"Industry\": info[\"Industry\"],\n                \"Ticker\": ticker,\n                \"3M %\": r3, \"6M %\": r6, \"12M %\": r12,\n                \"Positive 3M\": bool(pd.notna(r3) and r3 > 0),\n                \"Positive 6M\": bool(pd.notna(r6) and r6 > 0),\n            })\n\n    stocks = pd.DataFrame(rows)\n    if stocks.empty:\n        return universe, stocks, pd.DataFrame()\n\n    sector_rows = []\n    for industry, g in stocks.groupby(\"Industry\"):\n        m3 = float(g[\"3M %\"].median()) if g[\"3M %\"].notna().any() else np.nan\n        m6 = float(g[\"6M %\"].median()) if g[\"6M %\"].notna().any() else np.nan\n        m12 = float(g[\"12M %\"].median()) if g[\"12M %\"].notna().any() else np.nan\n        breadth3 = 100 * g[\"Positive 3M\"].mean()\n        breadth6 = 100 * g[\"Positive 6M\"].mean()\n        momentum = np.mean([\n            5 + 5 * np.tanh(m3 / 10) if pd.notna(m3) else 5,\n            5 + 5 * np.tanh(m6 / 18) if pd.notna(m6) else 5,\n            5 + 5 * np.tanh(m12 / 28) if pd.notna(m12) else 5,\n        ])\n        breadth_score = (breadth3 + breadth6) / 20\n        score = float(np.clip(0.78 * momentum + 0.22 * breadth_score, 0, 10))\n        sector_rows.append({\n            \"Industry\": industry,\n            \"Stocks\": len(g),\n            \"3M Momentum %\": m3,\n            \"6M Momentum %\": m6,\n            \"12M Momentum %\": m12,\n            \"3M Breadth %\": breadth3,\n            \"6M Breadth %\": breadth6,\n            \"Sector Score\": score,\n        })\n\n    sectors = pd.DataFrame(sector_rows).sort_values(\"Sector Score\", ascending=False).reset_index(drop=True)\n    return universe, stocks, sectors\n\n\n@st.cache_data(ttl=1800, show_spinner=False)\ndef selected_stock_snapshot(ticker):\n    t = yf.Ticker(ticker)\n    try:\n        info = t.info or {}\n    except Exception:\n        info = {}\n    try:\n        hist = t.history(period=\"15y\", interval=\"1d\", auto_adjust=False)\n    except Exception:\n        hist = pd.DataFrame()\n\n    cmp_value = safe_float(info.get(\"currentPrice\", info.get(\"regularMarketPrice\")))\n    if pd.isna(cmp_value) and not hist.empty:\n        cmp_value = safe_float(pd.to_numeric(hist.get(\"Close\"), errors=\"coerce\").dropna().iloc[-1])\n\n    r3 = r6 = r12 = np.nan\n    status = \"N/A\"\n    old_ath = np.nan\n    months_gap = np.nan\n    breakout_pct = np.nan\n    if not hist.empty and \"Close\" in hist.columns and \"High\" in hist.columns:\n        c = pd.to_numeric(hist[\"Close\"], errors=\"coerce\").dropna()\n        r3, r6, r12 = _returns_from_close(c)\n        m = hist[[\"High\", \"Close\"]].copy()\n        m.index = pd.to_datetime(m.index).tz_localize(None)\n        monthly = m.resample(\"ME\").agg({\"High\": \"max\", \"Close\": \"last\"}).dropna()\n        if len(monthly) >= 27:\n            prior = monthly.iloc[:-1]\n            old_ath = safe_float(prior[\"High\"].max())\n            ath_date = prior[\"High\"].idxmax()\n            current_date = monthly.index[-1]\n            months_gap = (current_date.year - ath_date.year) * 12 + current_date.month - ath_date.month\n            latest_close = safe_float(monthly.iloc[-1][\"Close\"])\n            breakout_pct = (latest_close / old_ath - 1) * 100 if old_ath else np.nan\n            if months_gap >= 26 and latest_close > old_ath:\n                status = \"✅ 26M ATH BREAKOUT\"\n            elif months_gap >= 26 and breakout_pct >= -5:\n                status = \"👀 NEAR 26M ATH\"\n            elif months_gap >= 26:\n                status = \"26M eligible, below ATH\"\n            else:\n                status = \"26M gap not met\"\n\n    fs, assessed, pe = fundamental_quality(ticker)\n    return {\n        \"Company\": info.get(\"longName\") or info.get(\"shortName\") or ticker.replace(\".NS\", \"\"),\n        \"CMP\": cmp_value, \"3M %\": r3, \"6M %\": r6, \"12M %\": r12,\n        \"26M Status\": status, \"Old ATH\": old_ath, \"Months Gap\": months_gap,\n        \"Breakout %\": breakout_pct, \"Fundamental Score %\": fs,\n        \"Fundamental Checks\": assessed, \"Trailing PE\": pe,\n    }\n\n\n'''
+'''
 
-    text = replace_once(text, anchor, anchor + addition, "NSE500 helper functions")
 
-    ui_anchor = '''if coverage < 70:\n    st.warning("Macro data coverage is below 70%. Treat the macro score and regime as low-confidence until feeds recover.")\n\n'''
-    ui = '''st.divider()\nst.subheader("🏅 Full NSE 500 Sector Leadership → Stock Analyzer")\nst.caption(\n    "Official NIFTY 500 constituent list is refreshed daily. Sector leadership is calculated from all available NIFTY 500 stocks, "\n    "not only stocks that already passed the 26M scanner. Price momentum uses live Yahoo market history."\n)\n\ntry:\n    with st.spinner("Loading full NIFTY 500 sector map…"):\n        nse_universe, nse_stocks, full_sectors = full_nifty500_sector_leadership()\nexcept Exception as exc:\n    nse_universe, nse_stocks, full_sectors = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()\n    st.warning(f"Full NSE 500 sector feed is temporarily unavailable: {exc}")\n\nif not full_sectors.empty:\n    leader = full_sectors.iloc[0]\n    s1, s2, s3, s4 = st.columns(4)\n    s1.metric("Leader Sector", leader[\"Industry\"])\n    s2.metric("Leader Score", f"{leader['Sector Score']:.1f}/10")\n    s3.metric("Stocks Analysed", int(nse_stocks[\"Symbol\"].nunique()))\n    s4.metric("Sectors Covered", int(full_sectors[\"Industry\"].nunique()))\n\n    st.dataframe(\n        full_sectors.head(25), use_container_width=True, hide_index=True,\n        column_config={\n            \"Sector Score\": st.column_config.ProgressColumn(min_value=0, max_value=10, format=\"%.1f\"),\n            \"3M Breadth %\": st.column_config.ProgressColumn(min_value=0, max_value=100, format=\"%.0f%%\"),\n            \"6M Breadth %\": st.column_config.ProgressColumn(min_value=0, max_value=100, format=\"%.0f%%\"),\n        },\n    )\n\n    sector_names = full_sectors[\"Industry\"].tolist()\n    chosen_sector = st.selectbox(\n        "Select leader/sector for stock analysis", sector_names, index=0,\n        help="The first option is the current highest-scoring sector.",\n    )\n    sector_stock_rows = nse_stocks[nse_stocks[\"Industry\"] == chosen_sector].copy()\n    sector_stock_rows[\"Momentum Rank\"] = (\n        sector_stock_rows[[\"3M %\", \"6M %\", \"12M %\"]].fillna(0).mean(axis=1)\n    )\n    sector_stock_rows = sector_stock_rows.sort_values(\"Momentum Rank\", ascending=False)\n\n    if not sector_stock_rows.empty:\n        options = sector_stock_rows.apply(\n            lambda r: f"{r['Symbol']} — {r['Company']}", axis=1\n        ).tolist()\n        selected_label = st.selectbox("Select stock from this sector", options)\n        selected_symbol = selected_label.split(" — ", 1)[0]\n        selected_ticker = selected_symbol + ".NS"\n\n        st.dataframe(\n            sector_stock_rows[[\"Symbol\", \"Company\", \"3M %\", \"6M %\", \"12M %\", \"Momentum Rank\"]],\n            use_container_width=True, hide_index=True,\n        )\n\n        if st.button(f"🔎 Analyse {selected_symbol}", type="primary", use_container_width=True):\n            with st.spinner(f"Analysing {selected_symbol}…"):\n                snapshot = selected_stock_snapshot(selected_ticker)\n            st.session_state[\"selected_sector_stock_snapshot\"] = (chosen_sector, selected_symbol, snapshot)\n\n        saved = st.session_state.get(\"selected_sector_stock_snapshot\")\n        if saved and saved[0] == chosen_sector and saved[1] == selected_symbol:\n            snap = saved[2]\n            q1, q2, q3, q4, q5 = st.columns(5)\n            q1.metric("CMP", "N/A" if pd.isna(snap[\"CMP\"]) else f"₹{snap['CMP']:,.2f}")\n            q2.metric("3M", "N/A" if pd.isna(snap[\"3M %\"]) else f"{snap['3M %']:+.1f}%")\n            q3.metric("6M", "N/A" if pd.isna(snap[\"6M %\"]) else f"{snap['6M %']:+.1f}%")\n            q4.metric("12M", "N/A" if pd.isna(snap[\"12M %\"]) else f"{snap['12M %']:+.1f}%")\n            q5.metric("Fundamental", "N/A" if pd.isna(snap[\"Fundamental Score %\"]) else f"{snap['Fundamental Score %']:.0f}%")\n            st.info(\n                f"**{snap['Company']}** · Sector: **{chosen_sector}** · 26M status: **{snap['26M Status']}** · "\n                f"Months gap: **{'N/A' if pd.isna(snap['Months Gap']) else int(snap['Months Gap'])}** · "\n                f"Breakout distance: **{'N/A' if pd.isna(snap['Breakout %']) else f\"{snap['Breakout %']:+.2f}%\"}** · "\n                f"Trailing P/E: **{'N/A' if pd.isna(snap['Trailing PE']) else f\"{snap['Trailing PE']:.1f}x\"}**"\n            )\n            in_scan = scan[scan[\"Symbol\"].astype(str) == selected_symbol] if not scan.empty and \"Symbol\" in scan.columns else pd.DataFrame()\n            if not in_scan.empty:\n                st.success("This stock is also present in the latest Professional Research Lab scan, so it can be compared with the final 0–100 ranking below.")\n            else:\n                st.caption("This stock is being analysed directly from the full NSE 500 sector universe; it does not need to have passed the earlier 26M scan to appear in this dropdown.")\n\n'''
-    text = replace_once(text, ui_anchor, ui_anchor + ui, "leader sector UI")
+def main():
+    text = PAGE.read_text(encoding="utf-8")
+
+    if "import io\n" not in text:
+        text = replace_once(
+            text,
+            "import numpy as np\nimport pandas as pd\nimport streamlit as st\nimport yfinance as yf\n",
+            "import io\nimport numpy as np\nimport pandas as pd\nimport requests\nimport streamlit as st\nimport yfinance as yf\n",
+            "imports",
+        )
+
+    # Replace the previously-added momentum-only full-NSE helper block.
+    helper_start = text.find("NIFTY500_URLS = [")
+    helper_end = text.find("@st.cache_data(ttl=1200, show_spinner=False)\ndef macro_state", helper_start)
+    if helper_start != -1 and helper_end != -1:
+        text = text[:helper_start] + strict_helpers() + text[helper_end:]
+    elif STRICT_MARKER not in text:
+        anchor = "@st.cache_data(ttl=1200, show_spinner=False)\ndef macro_state"
+        pos = text.find(anchor)
+        if pos == -1:
+            raise RuntimeError("macro_state anchor not found")
+        text = text[:pos] + strict_helpers() + text[pos:]
+
+    # Replace old Full NSE UI block, which sat immediately before the scan-empty guard.
+    ui_start = text.find('st.divider()\nst.subheader("🏅 Full NSE 500 Sector Leadership → Stock Analyzer")')
+    scan_guard = text.find('if scan.empty:', ui_start if ui_start != -1 else 0)
+    if ui_start != -1 and scan_guard != -1:
+        text = text[:ui_start] + strict_ui() + text[scan_guard:]
+    elif "Strict Weekly Sector RS Breakout → Stock Analyzer" not in text:
+        warning_anchor = 'if coverage < 70:\n    st.warning("Macro data coverage is below 70%. Treat the macro score and regime as low-confidence until feeds recover.")\n\n'
+        if warning_anchor not in text:
+            raise RuntimeError("UI insertion anchor not found")
+        text = text.replace(warning_anchor, warning_anchor + strict_ui(), 1)
+
+    # The older expander is scan-only. Make that explicit and stop it from being mistaken for the true leader engine.
+    text = text.replace('with st.expander("🔄 Sector leadership used in ranking", expanded=False):',
+                        'with st.expander("📎 26M scan-only sector context (NOT the strict leader selector)", expanded=False):')
+
+    # Use full-NSE strict sector score in final ranking whenever it is available; retain legacy fallback only for feed failure.
+    old = 'smap = sectors.set_index("Industry")["Sector Score"].to_dict() if not sectors.empty else {}'
+    new = ('legacy_smap = sectors.set_index("Industry")["Sector Score"].to_dict() if not sectors.empty else {}\n'
+           '    strict_smap = st.session_state.get("strict_sector_scores", {})\n'
+           '    smap = strict_smap if strict_smap else legacy_smap')
+    if old in text:
+        text = text.replace(old, new, 1)
 
     PAGE.write_text(text, encoding="utf-8")
-    print("Full NSE 500 sector leader dropdown added to Final Opportunities")
+    print("Strict weekly NIFTY50-relative sector leadership installed")
 
 
 if __name__ == "__main__":
