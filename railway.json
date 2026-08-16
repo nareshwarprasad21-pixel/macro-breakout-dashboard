@@ -1,7 +1,7 @@
 {
   "$schema": "https://railway.com/railway.schema.json",
   "deploy": {
-    "startCommand": "streamlit run app.py --server.address 0.0.0.0 --server.port $PORT --server.headless true",
+    "startCommand": "python upgrade_graham_12_v2.py && python -m py_compile app.py graham.py && streamlit run app.py --server.address 0.0.0.0 --server.port $PORT --server.headless true",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 5
   }
