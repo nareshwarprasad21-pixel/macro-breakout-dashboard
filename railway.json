@@ -1,7 +1,7 @@
 {
   "$schema": "https://railway.com/railway.schema.json",
   "deploy": {
-    "startCommand": "python upgrade_graham_12_v2.py && python upgrade_full_nse_sector_dropdown.py && python upgrade_leader_stock_dual_breakout.py && python -m py_compile app.py graham.py pages/2_Final_Opportunities.py && python -m unittest test_graham.py && streamlit run app.py --server.address 0.0.0.0 --server.port $PORT --server.headless true",
+    "startCommand": "python upgrade_graham_12_v2.py && python upgrade_full_nse_sector_dropdown.py && python upgrade_leader_stock_dual_breakout.py && python upgrade_clean_sector_rotation_chart.py && python -m py_compile app.py graham.py pages/1_Professional_Research_Lab.py pages/2_Final_Opportunities.py && python -m unittest test_graham.py && streamlit run app.py --server.address 0.0.0.0 --server.port $PORT --server.headless true",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 5
   }
