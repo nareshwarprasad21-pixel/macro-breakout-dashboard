@@ -1,0 +1,38 @@
+name: Apply Graham 12-point upgrade
+
+on:
+  push:
+    paths:
+      - 'upgrade_graham_12.py'
+      - '.github/workflows/apply-graham-12.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  upgrade:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply 12-point Graham upgrade
+        run: python upgrade_graham_12.py
+
+      - name: Compile-check Python files
+        run: python -m py_compile app.py graham.py
+
+      - name: Commit upgraded dashboard
+        run: |
+          if git diff --quiet -- app.py graham.py; then
+            echo "No changes required."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.py graham.py
+          git commit -m "Upgrade Graham scorecard to 12 real-data criteria"
+          git push
