@@ -12,6 +12,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 import yfinance as yf
+from graham import fetch_graham_data
 
 st.set_page_config(page_title="Macro + 26M ATH Breakout Dashboard", page_icon="📈", layout="wide")
 
@@ -1234,280 +1235,80 @@ def make_chart(monthly, signal=None, name="Stock"):
 
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=900, show_spinner=False)
 def graham_value_data(ticker):
-    """Robust Graham inputs with multiple Yahoo/yfinance fallbacks for Streamlit Cloud."""
-    symbol = str(ticker).strip().upper()
-    if symbol.endswith(".NS.NS"):
-        symbol = symbol[:-3]
-    if not symbol.endswith(".NS"):
-        symbol += ".NS"
-
-    t = yf.Ticker(symbol)
-
-    # Do not let one blocked Yahoo endpoint make the entire score N/A.
-    try:
-        info = t.info or {}
-    except Exception:
-        info = {}
-
-    def get_frame(*attrs):
-        for attr in attrs:
-            try:
-                df = getattr(t, attr)
-                if callable(df):
-                    df = df()
-                if isinstance(df, pd.DataFrame) and not df.empty:
-                    return df.copy()
-            except Exception:
-                pass
-        return pd.DataFrame()
-
-    # Attribute access and explicit getter calls exercise different yfinance
-    # code paths; either may work when the other Yahoo endpoint is throttled.
-    inc = get_frame("income_stmt", "financials", "get_income_stmt")
-    bs = get_frame("balance_sheet", "get_balance_sheet")
-
-    try:
-        div = t.dividends
-    except Exception:
-        div = pd.Series(dtype=float)
-
-    def row(df, names):
-        if df is None or df.empty:
-            return pd.Series(dtype=float)
-        # yfinance labels can vary slightly by release.
-        idx_map = {str(i).strip().lower(): i for i in df.index}
-        for n in names:
-            key = str(n).strip().lower()
-            if key in idx_map:
-                s = pd.to_numeric(df.loc[idx_map[key]], errors="coerce").dropna()
-                try:
-                    s.index = pd.to_datetime(s.index)
-                    s = s.sort_index()
-                except Exception:
-                    pass
-                return s
-        return pd.Series(dtype=float)
-
-    def latest(s):
-        try:
-            return float(pd.to_numeric(s, errors="coerce").dropna().iloc[-1])
-        except Exception:
-            return np.nan
-
-    rev = row(inc, ["Total Revenue", "Operating Revenue"])
-    eps = row(inc, ["Diluted EPS", "Basic EPS"])
-    net_income = row(inc, ["Net Income", "Net Income Common Stockholders"])
-    diluted_shares = row(inc, ["Diluted Average Shares", "Basic Average Shares"])
-
-    ca = row(bs, ["Current Assets", "Total Current Assets"])
-    cl = row(bs, ["Current Liabilities", "Total Current Liabilities"])
-    ltd = row(bs, [
-        "Long Term Debt And Capital Lease Obligation",
-        "Long Term Debt",
-        "Long Term Debt Noncurrent"
-    ])
-    equity = row(bs, [
-        "Stockholders Equity",
-        "Total Stockholder Equity",
-        "Common Stock Equity"
-    ])
-    statement_shares = row(bs, ["Ordinary Shares Number", "Share Issued"])
-
-    # CMP fallback order: info -> fast_info -> recent daily history.
-    price = info.get("currentPrice", info.get("regularMarketPrice", np.nan))
-    try:
-        price = float(price)
-    except Exception:
-        price = np.nan
-
-    if pd.isna(price):
-        try:
-            fi = t.fast_info
-            price = float(fi["last_price"])
-        except Exception:
-            pass
-
-    if pd.isna(price):
-        try:
-            h = t.history(period="5d", interval="1d", auto_adjust=False)
-            if not h.empty:
-                price = float(pd.to_numeric(h["Close"], errors="coerce").dropna().iloc[-1])
-        except Exception:
-            pass
-    if pd.isna(price):
-        try:
-            h = yf.download(symbol, period="5d", interval="1d", auto_adjust=False,
-                            progress=False, threads=False, timeout=15)
-            close = h["Close"]
-            if isinstance(close, pd.DataFrame):
-                close = close.iloc[:, 0]
-            price = float(pd.to_numeric(close, errors="coerce").dropna().iloc[-1])
-        except Exception:
-            pass
-
-    # Sales fallback.
-    sales = latest(rev)
-    if pd.isna(sales):
-        try:
-            sales = float(info.get("totalRevenue", np.nan))
-        except Exception:
-            sales = np.nan
-
-    # Current ratio and NWC from statements first, info second.
-    ca_latest, cl_latest = latest(ca), latest(cl)
-    if pd.notna(ca_latest) and pd.notna(cl_latest) and cl_latest != 0:
-        current_ratio = ca_latest / cl_latest
-        nwc = ca_latest - cl_latest
-    else:
-        try:
-            current_ratio = float(info.get("currentRatio", np.nan))
-        except Exception:
-            current_ratio = np.nan
-        nwc = np.nan
-
-    long_debt = latest(ltd)
-    if pd.isna(long_debt):
-        try:
-            long_debt = float(info.get("longTermDebt", np.nan))
-        except Exception:
-            long_debt = np.nan
-
-    # If Yahoo does not expose EPS row, derive annual EPS = net income / diluted avg shares.
-    if eps.empty and not net_income.empty and not diluted_shares.empty:
-        common_dates = net_income.index.intersection(diluted_shares.index)
-        vals = {}
-        for dt in common_dates:
-            ni = pd.to_numeric(pd.Series([net_income.loc[dt]]), errors="coerce").iloc[0]
-            sh = pd.to_numeric(pd.Series([diluted_shares.loc[dt]]), errors="coerce").iloc[0]
-            if pd.notna(ni) and pd.notna(sh) and sh != 0:
-                vals[dt] = ni / sh
-        if vals:
-            eps = pd.Series(vals).sort_index()
-
-    eps_vals = pd.to_numeric(eps, errors="coerce").dropna()
-    try:
-        eps_vals.index = pd.to_datetime(eps_vals.index)
-        eps_vals = eps_vals.sort_index()
-    except Exception:
-        pass
-
-    avg3_eps = float(eps_vals.tail(3).mean()) if len(eps_vals) >= 3 else np.nan
-
-    # BVPS fallback: info -> latest equity / shares outstanding.
-    try:
-        bvps = float(info.get("bookValue", np.nan))
-    except Exception:
-        bvps = np.nan
-
-    shares = np.nan
-    try:
-        shares = float(info.get("sharesOutstanding", np.nan))
-    except Exception:
-        pass
-    if pd.isna(shares):
-        try:
-            fi = t.fast_info
-            shares = float(fi["shares"])
-        except Exception:
-            pass
-    if pd.isna(shares):
-        shares = latest(statement_shares)
-
-    if pd.isna(bvps):
-        eq = latest(equity)
-        if pd.notna(eq) and pd.notna(shares) and shares > 0:
-            bvps = eq / shares
-
-    pe3 = float(price / avg3_eps) if pd.notna(price) and pd.notna(avg3_eps) and avg3_eps > 0 else np.nan
-    pb = float(price / bvps) if pd.notna(price) and pd.notna(bvps) and bvps > 0 else np.nan
-    combined = pe3 * pb if pd.notna(pe3) and pd.notna(pb) else np.nan
-    graham_no = np.sqrt(22.5 * avg3_eps * bvps) if pd.notna(avg3_eps) and avg3_eps > 0 and pd.notna(bvps) and bvps > 0 else np.nan
-    mos = ((graham_no - price) / graham_no * 100) if pd.notna(graham_no) and graham_no > 0 and pd.notna(price) else np.nan
-
-    # Yahoo normally provides only ~4 annual statements, so 10Y EPS tests remain N/A
-    # rather than fabricating a pass/fail.
-    eps_positive_10y = None
-    eps_growth_10y = None
-    div20 = None
-    if div is not None and len(div):
-        try:
-            annual = div.groupby(div.index.year).sum()
-            years = list(range(int(annual.index.max()) - 19, int(annual.index.max()) + 1))
-            last20 = annual.reindex(years, fill_value=0)
-            if len(last20) == 20:
-                div20 = bool((last20 > 0).all())
-        except Exception:
-            pass
-
-    company = info.get("longName") or info.get("shortName") or symbol.replace(".NS", "")
-
-    return dict(
-        company=company, price=price, sales=sales,
-        current_ratio=current_ratio, nwc=nwc, long_debt=long_debt,
-        eps_positive_10y=eps_positive_10y, dividend20=div20,
-        eps_growth_10y=eps_growth_10y, avg3_eps=avg3_eps, pe3=pe3,
-        bvps=bvps, pb=pb, combined=combined, graham_no=graham_no, mos=mos,
-        eps_years=len(eps_vals)
-    )
+    # A short cache keeps CMP reasonably fresh while avoiding repeated calls to
+    # the quote and historical fundamentals endpoints on each Streamlit rerun.
+    return fetch_graham_data(ticker)
 
 def render_graham_page():
     st.title("🧮 Graham Value Formula Scorecard")
-    st.caption("Screenshot formula table converted into an interactive dashboard. PASS = 1 point; unavailable long-history data is shown as N/A, not guessed.")
-    c1,c2,c3 = st.columns([2,1,1])
-    with c1:
-        sym = st.text_input("NSE Symbol", value="BALRAMCHIN", help="Examples: BALRAMCHIN, WAAREEENER, LT, BEL").strip().upper()
-    with c2:
-        g = st.number_input("Expected growth g (%)", min_value=0.0, max_value=100.0, value=15.0, step=1.0)
-    with c3:
-        y = st.number_input("AAA bond yield Y (%)", min_value=0.1, max_value=20.0, value=7.0, step=0.1)
+    st.caption("Ten Graham tests calculated from Yahoo Finance live quotes, reported annual statements, fundamentals history and dividend events. Missing observations remain N/A.")
+    sym = st.text_input("NSE Symbol", value="BSE", help="Examples: BSE, BALRAMCHIN, LT, BEL").strip().upper()
     if not st.button("🔎 Calculate Graham Score", type="primary", use_container_width=True):
         st.info("Enter an NSE symbol and press **Calculate Graham Score**.")
         return
-    with st.spinner("Fetching fundamentals and calculating Graham tests…"):
-        d=graham_value_data(sym)
-    growth_value = d['avg3_eps']*(8.5+2*g)*4.4/y if pd.notna(d['avg3_eps']) and d['avg3_eps']>0 else np.nan
-    growth_pass = pd.notna(growth_value) and pd.notna(d['price']) and growth_value>d['price']
-    tests=[
-      ("1", "Adequate Size", "Sales > ₹500 Cr", d['sales']/1e7 if pd.notna(d['sales']) else np.nan, pd.notna(d['sales']) and d['sales']>500e7, "₹ Cr"),
-      ("2", "Current Ratio", "Current Assets / Current Liabilities > 2", d['current_ratio'], pd.notna(d['current_ratio']) and d['current_ratio']>2, "x"),
-      ("3", "Debt Check", "Long-term Debt < Net Working Capital", d['long_debt']/1e7 if pd.notna(d['long_debt']) else np.nan, pd.notna(d['long_debt']) and pd.notna(d['nwc']) and d['long_debt']<d['nwc'], "₹ Cr LT debt"),
-      ("4", "Earnings Stability", "Positive EPS for last 10 years", np.nan, d['eps_positive_10y'], ""),
-      ("5", "Dividend Record", "Uninterrupted dividend, 20 years", np.nan, d['dividend20'], ""),
-      ("6", "Earnings Growth", "EPS +33% over 10 yrs (3-yr avg done end pe)", np.nan, d['eps_growth_10y'], ""),
-      ("7", "P/E Ratio", "< 15 (3-yr avg EPS pe)", d['pe3'], pd.notna(d['pe3']) and d['pe3']<15, "x"),
-      ("8", "P/B Ratio", "< 1.5", d['pb'], pd.notna(d['pb']) and d['pb']<1.5, "x"),
-      ("9", "Combined Test", "P/E × P/B < 22.5", d['combined'], pd.notna(d['combined']) and d['combined']<22.5, ""),
-      ("10", "Graham Number", "SQRT(22.5 × EPS × BVPS)", d['graham_no'], pd.notna(d['graham_no']) and pd.notna(d['price']) and d['graham_no']>d['price'], "₹"),
-      ("11", "Margin of Safety", "(Graham No. - CMP) / Graham No.", d['mos'], pd.notna(d['mos']) and d['mos']>0, "%"),
-      ("12", "Growth Formula", "[EPS × (8.5 + 2g) × 4.4] / Y", growth_value, growth_pass, "₹"),
+    try:
+        with st.spinner("Fetching live quote and reported financial history…"):
+            d = graham_value_data(sym)
+    except ValueError as error:
+        st.error(str(error))
+        return
+    except Exception as error:
+        st.error(f"Financial data could not be fetched: {error}")
+        return
+
+    tests = [
+        ("1", "Adequate Size", "Sales > ₹500 Cr", d["sales"] / 1e7 if pd.notna(d["sales"]) else np.nan,
+         None if pd.isna(d["sales"]) else d["sales"] > 500e7, "₹ Cr"),
+        ("2", "Current Ratio", "Current Assets / Current Liabilities > 2", d["current_ratio"],
+         None if pd.isna(d["current_ratio"]) else d["current_ratio"] > 2, "x"),
+        ("3", "Debt Check", "Long-term Debt < Net Working Capital", d["long_debt"] / 1e7 if pd.notna(d["long_debt"]) else np.nan,
+         None if pd.isna(d["long_debt"]) or pd.isna(d["nwc"]) else d["long_debt"] < d["nwc"], "₹ Cr LT debt"),
+        ("4", "Earnings Stability", "Positive EPS in each of last 10 annual reports", np.nan, d["eps_positive_10y"], ""),
+        ("5", "Dividend Record", "Dividend paid in each of 20 completed years", np.nan, d["dividend20"], ""),
+        ("6", "Earnings Growth", "Latest 3-year avg EPS ≥ 133% of first 3-year avg", np.nan, d["eps_growth_10y"], ""),
+        ("7", "3-year Average P/E", "CMP / 3-year average EPS < 15", d["pe3"],
+         None if pd.isna(d["pe3"]) else d["pe3"] < 15, "x"),
+        ("8", "P/B Ratio", "CMP / book value per share < 1.5", d["pb"],
+         None if pd.isna(d["pb"]) else d["pb"] < 1.5, "x"),
+        ("9", "Combined Test", "3-year P/E × P/B < 22.5", d["combined"],
+         None if pd.isna(d["combined"]) else d["combined"] < 22.5, "x"),
+        ("10", "Graham Number", "√(22.5 × 3-year avg EPS × BVPS) > CMP", d["graham_no"],
+         None if pd.isna(d["graham_no"]) or pd.isna(d["price"]) else d["graham_no"] > d["price"], "₹"),
     ]
-    rows=[]; passed=0; assessed=0
-    for no,name,formula,val,ok,unit in tests:
-        available = ok is not None and (pd.notna(val) or no in ['4','5','6'])
-        if ok is None: available=False
-        if available:
-            assessed+=1; passed+=int(bool(ok))
-            status="🟢 PASS" if ok else "🔴 FAIL"
-        else: status="⚪ N/A"
-        if pd.isna(val): value="N/A"
-        elif unit=="₹ Cr": value=f"₹{val:,.0f} Cr"
-        elif unit=="₹ Cr LT debt": value=f"₹{val:,.0f} Cr (NWC ₹{d['nwc']/1e7:,.0f} Cr)" if pd.notna(d['nwc']) else f"₹{val:,.0f} Cr"
-        elif unit=="₹": value=f"₹{val:,.2f}"
-        elif unit=="%": value=f"{val:.1f}%"
-        elif unit=="x": value=f"{val:.2f}x"
-        else: value=f"{val:.2f}"
-        rows.append({"#":no,"Criteria":name,"Formula / Threshold":formula,"Value":value,"Score":status})
-    pct=100*passed/assessed if assessed else 0
-    m1,m2,m3,m4=st.columns(4)
-    m1.metric("Company",d['company']); m2.metric("CMP","N/A" if pd.isna(d['price']) else f"₹{d['price']:,.2f}")
-    m3.metric("Graham Score",f"{passed}/{assessed}"); m4.metric("Pass %",f"{pct:.0f}%")
-    st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
-    st.caption(f"Annual EPS periods available: {d['eps_years']}. The engine now uses multiple fallbacks for CMP and financial statements. Criteria 4–6 still stay N/A unless true long-history data is available; they are never guessed. Growth Formula uses g={g:.1f}% and Y={y:.1f}%.")
-    if pd.isna(d['price']):
-        st.error("Live CMP could not be fetched from Yahoo at this moment. Try again after a short interval; the score will not treat missing data as a FAIL.")
-    st.warning("Graham score measures conservative value characteristics. A low score does not automatically mean a bad business, and a high score is not a buy signal. Use it alongside Value Migration, growth, fundamentals and the 26M breakout framework.")
+    rows, passed, assessed = [], 0, 0
+    for no, name, formula, value, result, unit in tests:
+        if result is None:
+            status = "⚪ N/A"
+        else:
+            assessed += 1
+            passed += int(bool(result))
+            status = "🟢 PASS" if result else "🔴 FAIL"
+        if pd.isna(value):
+            display = "N/A"
+        elif unit == "₹ Cr":
+            display = f"₹{value:,.0f} Cr"
+        elif unit == "₹ Cr LT debt":
+            nwc = f"; NWC ₹{d['nwc'] / 1e7:,.0f} Cr" if pd.notna(d["nwc"]) else "; NWC N/A"
+            display = f"₹{value:,.0f} Cr{nwc}"
+        elif unit == "₹":
+            display = f"₹{value:,.2f}"
+        else:
+            display = f"{value:.2f}x"
+        rows.append({"#": no, "Criterion": name, "Formula / threshold": formula, "Reported value": display, "Result": status})
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Company", d["company"])
+    m2.metric("CMP", "N/A" if pd.isna(d["price"]) else f"₹{d['price']:,.2f}")
+    m3.metric("Graham Score", f"{passed}/{assessed} evaluable")
+    m4.metric("Unavailable", f"{10 - assessed}/10")
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    st.caption(f"Ticker: {d['symbol']} · Retrieved: {d['as_of']} · Source: {d['sources']}. Annual EPS periods found: {d['eps_years']}. Score percentage is {100 * passed / assessed:.0f}% of evaluable criteria." if assessed else f"Ticker: {d['symbol']} · Retrieved: {d['as_of']} · No criteria were evaluable.")
+    st.info("Sales, debt and working capital are displayed in ₹ crore (₹1 crore = ₹10,000,000); EPS, CMP and BVPS are per share in rupees. The current calendar year is excluded from the 20-year dividend test.")
+    if pd.isna(d["price"]):
+        st.error("Live CMP is unavailable. Price-dependent criteria remain N/A rather than becoming FAIL.")
+    st.warning("A Graham score is a conservative value screen, not a buy signal. Financial-sector balance sheets may not report classified current assets/current liabilities, in which case those tests correctly remain N/A.")
 
 
 # Sidebar navigation — permanently visible and never clipped by Streamlit's top header.
