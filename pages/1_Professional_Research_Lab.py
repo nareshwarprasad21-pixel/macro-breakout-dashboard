@@ -17,6 +17,8 @@ st.markdown("""
 .good{background:rgba(34,197,94,.10);border-left:5px solid #22c55e}.mid{background:rgba(234,179,8,.11);border-left:5px solid #eab308}.bad{background:rgba(239,68,68,.09);border-left:5px solid #ef4444}
 .buygate{padding:20px;border-radius:18px;background:linear-gradient(135deg,rgba(34,197,94,.15),rgba(59,130,246,.06));border:2px solid rgba(34,197,94,.45);margin:12px 0}
 .waitgate{padding:20px;border-radius:18px;background:linear-gradient(135deg,rgba(239,68,68,.12),rgba(245,158,11,.06));border:2px solid rgba(239,68,68,.35);margin:12px 0}
+.confirmed-banner{padding:18px 20px;border-radius:16px;background:linear-gradient(135deg,rgba(34,197,94,.20),rgba(16,185,129,.08));border:2px solid #22c55e;margin:10px 0 14px 0;font-size:1.05rem}
+.confirmed-pill{display:inline-block;padding:5px 10px;margin:4px 6px 4px 0;border-radius:999px;background:#16a34a;color:white;font-weight:800;font-size:.9rem}
 .small{font-size:.88rem;opacity:.78}
 @media(max-width:900px){.block-container{padding:1rem .7rem!important}.card{min-height:auto}}
 </style>
@@ -107,8 +109,9 @@ def evaluate_setups(d,nc,sc,sector_score):
     r=rsi_series(c);rnow=sf(r.iloc[-1]);rprev=sf(r.iloc[-2]) if len(r)>1 else np.nan;rising62=all(sf(ma62.iloc[-i])>sf(ma62.iloc[-i-1]) for i in range(1,6)) if len(ma62)>=7 else False;s6={"62DMA rising for 5 sessions":rising62,"RSI(14) > 30":pd.notna(rnow) and rnow>30,"RSI(14) < 43":pd.notna(rnow) and rnow<43,"RSI crossed above 35":pd.notna(rprev) and rprev<=35 and rnow>35}
     raw=[("#1 50D High + 200DMA + Green",s1),("#2 198/200 DMA Goldmine",s2),("#3 30MA + Green Candle",s3),("#4 Stock Outperform NIFTY-50",s4),("#5 Bollinger Squeeze Breakout",s5),("#6 R62 Trend + RSI Recovery",s6)];rows=[];details={}
     for name,checks in raw:
-        passed=sum(bool(v) for v in checks.values());confirmed=all(checks.values());rows.append({"Technical Setup":name,"Status":"CONFIRMED ✅" if confirmed else "NOT CONFIRMED ❌","Passed":f"{passed}/{len(checks)}"});details[name]=pd.DataFrame([{"Condition":k,"Result":"PASS ✅" if v else "FAIL ❌"} for k,v in checks.items()])
-    return pd.DataFrame(rows),details,[name for name,checks in raw if all(checks.values())],{"Stock22":stock22,"Nifty22":nifty22,"RS22":rs22}
+        passed=sum(bool(v) for v in checks.values());confirmed=all(checks.values());rows.append({"Confirmed":"✅ YES" if confirmed else "—","Technical Setup":name,"Status":"🟢 CONFIRMED" if confirmed else "⚪ Not Confirmed","Passed":f"{passed}/{len(checks)}","Priority":1 if confirmed else 2});details[name]=pd.DataFrame([{"Condition":k,"Result":"PASS ✅" if v else "FAIL ❌"} for k,v in checks.items()])
+    table=pd.DataFrame(rows).sort_values(["Priority","Technical Setup"]).drop(columns=["Priority"])
+    return table,details,[name for name,checks in raw if all(checks.values())],{"Stock22":stock22,"Nifty22":nifty22,"RS22":rs22}
 
 def swing(symbol,mscore):
     ticker=symbol if symbol.endswith(".NS") else symbol+".NS";sname=sector_for(ticker);sticker=SECTORS.get(sname,"^CNXSERVICE");ts=[ticker,"^NSEI",sticker];raw=dl(ts,"2y");d=one(raw,ticker,3);n=one(raw,"^NSEI",3);sec=one(raw,sticker,3)
@@ -137,11 +140,14 @@ with tabs[1]:
     x=st.session_state.get("sw")
     if x:
         st.header(f"{x['Final']} — {x['Ticker']}");m1,m2,m3,m4,m5=st.columns(5);m1.metric("Swing Score",f"{x['Score']:.1f}/100");m2.metric("Price",f"₹{x['Price']:.2f}");m3.metric("Sector",x['Sector']);m4.metric("RSI(14)",f"{x['RSI']:.1f}");m5.metric("As Of",x['As Of'])
-        if x['Gate']:st.markdown(f"<div class='buygate'><h3>🔓 APPROVED TECHNICAL SETUP FOUND</h3><b>{'<br>'.join(x['Confirmed'])}</b><br><span class='small'>Final trade still uses market + sector + relative-strength context.</span></div>",unsafe_allow_html=True)
+        if x['Gate']:
+            pills=''.join([f"<span class='confirmed-pill'>{name}</span>" for name in x['Confirmed']]);st.markdown(f"<div class='confirmed-banner'><b>✅ CONFIRMED TECHNICAL SETUP DETECTED</b><br>{pills}<br><span class='small'>Green confirmed setups are shown at the top of the table below for quick identification.</span></div>",unsafe_allow_html=True)
         else:st.markdown("<div class='waitgate'><h3>🔒 BUY LOCKED</h3>None of Technical Setups #1–#6 is fully confirmed.</div>",unsafe_allow_html=True)
-        st.subheader("🧩 Technical Setups #1–#6 — Live Results");st.dataframe(x['Setups'],use_container_width=True,hide_index=True)
+        st.subheader("🧩 Technical Setups #1–#6 — Live Results")
+        st.dataframe(x['Setups'],use_container_width=True,hide_index=True,column_config={"Confirmed":st.column_config.TextColumn("✅ Confirmed?",width="small"),"Technical Setup":st.column_config.TextColumn("Technical Setup",width="large"),"Status":st.column_config.TextColumn("Status",width="medium"),"Passed":st.column_config.TextColumn("Conditions",width="small")})
         for name in x['Setups']['Technical Setup']:
-            with st.expander(name):st.dataframe(x['SetupDetails'][name],use_container_width=True,hide_index=True)
+            row=x['Setups'][x['Setups']['Technical Setup']==name].iloc[0];prefix="✅ CONFIRMED — " if row['Confirmed']=="✅ YES" else "" 
+            with st.expander(prefix+name):st.dataframe(x['SetupDetails'][name],use_container_width=True,hide_index=True)
         st.subheader("💪 Context Filters");q1,q2,q3=st.columns(3);q1.metric("Market Condition",f"{x['Market']:.0f}/100");q2.metric("Sector Leadership",f"{x['SectorScore']:.0f}/100");q3.metric("Stock Relative Strength",f"{x['RSScore']:.0f}/100");st.caption(f"Stock vs NIFTY 1M RS: {x['RSN']:.2f}%"+(f" | Stock vs Sector: {x['RSS']:.2f}%" if pd.notna(x['RSS']) else ""))
         st.subheader("🛑 Trade Planning Reference");r1,r2,r3,r4=st.columns(4);r1.metric("Entry Reference",f"₹{x['Entry']:.2f}");r2.metric("Stop Loss",f"₹{x['SL']:.2f}");r3.metric("2R Target",f"₹{x['Target']:.2f}");r4.metric("Trail Ref (20DMA)",f"₹{x['Trail']:.2f}")
     st.subheader("🏅 Live Weekly Sector Leadership");secdf=weekly_sector_scores();st.dataframe(secdf.round(2),use_container_width=True,hide_index=True)
