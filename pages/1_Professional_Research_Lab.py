@@ -27,6 +27,12 @@ st.markdown("""
 MACRO={"NIFTY 50":"^NSEI","India VIX":"^INDIAVIX","USD/INR":"INR=X","Brent Crude":"BZ=F","Dollar Index":"DX-Y.NYB","US 10Y Yield":"^TNX","Gold":"GC=F"}
 SECTORS={"NIFTY Auto":"^CNXAUTO","NIFTY Bank":"^NSEBANK","NIFTY Financial Services":"NIFTY_FIN_SERVICE.NS","NIFTY FMCG":"^CNXFMCG","NIFTY IT":"^CNXIT","NIFTY Media":"^CNXMEDIA","NIFTY Metal":"^CNXMETAL","NIFTY Pharma":"^CNXPHARMA","NIFTY PSU Bank":"^CNXPSUBANK","NIFTY Realty":"^CNXREALTY","NIFTY Energy":"^CNXENERGY","NIFTY Infrastructure":"^CNXINFRA","NIFTY Commodities":"^CNXCMDT","NIFTY Consumption":"^CNXCONSUM","NIFTY Services Sector":"^CNXSERVICE"}
 HINTS={"technology":"NIFTY IT","financial":"NIFTY Financial Services","bank":"NIFTY Bank","healthcare":"NIFTY Pharma","basic materials":"NIFTY Metal","consumer cyclical":"NIFTY Auto","consumer defensive":"NIFTY FMCG","real estate":"NIFTY Realty","energy":"NIFTY Energy","communication":"NIFTY Media","industrials":"NIFTY Infrastructure","utilities":"NIFTY Energy"}
+NIFTY500_SOURCES=[
+    "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv",
+    "https://niftyindices.com/IndexConstituent/ind_nifty500list.csv",
+    "https://www.nseindia.com/content/indices/ind_nifty500list.csv",
+    "https://raw.githubusercontent.com/ganeshbiyer/Nse_Historical_Data/main/nifty500_symbols.csv",
+]
 
 def sf(x):
     try:
@@ -66,6 +72,52 @@ def sector_for(ticker):
     for k,v in HINTS.items():
         if k in sec:return v
     return "NIFTY Services Sector"
+
+@st.cache_data(ttl=86400,show_spinner=False)
+def load_nifty500():
+    headers={
+        "User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136 Safari/537.36",
+        "Accept":"text/csv,text/plain,*/*",
+        "Referer":"https://www.niftyindices.com/indices/equity/broad-based-indices/nifty-500",
+    }
+    errors=[]
+    for url in NIFTY500_SOURCES:
+        try:
+            r=requests.get(url,headers=headers,timeout=20)
+            r.raise_for_status()
+            text=r.text.strip()
+            if not text:continue
+            df=pd.read_csv(io.StringIO(text))
+            cols={str(c).strip().lower():c for c in df.columns}
+            symcol=cols.get("symbol")
+            if symcol is None:
+                # GitHub fallback is a simple symbol list; use first column.
+                symcol=df.columns[0]
+            syms=df[symcol].astype(str).str.strip().str.upper()
+            syms=syms.str.replace(".NS","",regex=False)
+            syms=syms[syms.str.match(r"^[A-Z0-9&.-]+$",na=False)]
+            syms=syms[~syms.isin(["SYMBOL","TICKER","NIFTY500"])]
+            out=pd.DataFrame({"Symbol":syms.drop_duplicates()})
+            if len(out)>=400:
+                out["Ticker"]=out["Symbol"]+".NS"
+                return out.reset_index(drop=True),url
+            errors.append(f"{url}: only {len(out)} valid symbols")
+        except Exception as e:
+            errors.append(f"{url}: {type(e).__name__} {e}")
+    raise RuntimeError("NIFTY 500 universe unavailable after all fallbacks. "+" | ".join(errors[-4:]))
+
+def monthly_26m_signal(d,min_gap=26):
+    if d is None or d.empty or "High" not in d.columns or "Close" not in d.columns:return None
+    x=d.copy();x.index=pd.to_datetime(x.index).tz_localize(None)
+    m=x.resample("ME").agg({"High":"max","Close":"last","Volume":"sum" if "Volume" in x.columns else "size"}).dropna(subset=["High","Close"])
+    if len(m)<min_gap+2:return None
+    highs=pd.to_numeric(m["High"],errors="coerce");closes=pd.to_numeric(m["Close"],errors="coerce")
+    latest=m.index[-1];latest_close=sf(closes.iloc[-1]);prior=highs.iloc[:-1].dropna()
+    if prior.empty:return None
+    old_ath=sf(prior.max());ath_dates=prior.index[np.isclose(prior.values,old_ath,rtol=1e-10,atol=1e-10)];ath_date=ath_dates[-1] if len(ath_dates) else prior.idxmax();gap=(latest.year-ath_date.year)*12+(latest.month-ath_date.month)
+    breakout=bool(pd.notna(latest_close) and latest_close>old_ath and gap>=min_gap)
+    distance=(latest_close/old_ath-1)*100 if pd.notna(latest_close) and old_ath else np.nan
+    return {"Status":"✅ 26M ATH BREAKOUT" if breakout else "🟡 Near / No Breakout","Monthly Close":latest_close,"Old ATH":old_ath,"ATH Date":ath_date.strftime("%Y-%m-%d"),"Months Gap":gap,"Breakout %":distance,"As Of":latest.strftime("%Y-%m-%d"),"Confirmed":breakout}
 
 @st.cache_data(ttl=1200,show_spinner=False)
 def macro_snapshot():
@@ -151,6 +203,29 @@ with tabs[1]:
         st.subheader("💪 Context Filters");q1,q2,q3=st.columns(3);q1.metric("Market Condition",f"{x['Market']:.0f}/100");q2.metric("Sector Leadership",f"{x['SectorScore']:.0f}/100");q3.metric("Stock Relative Strength",f"{x['RSScore']:.0f}/100");st.caption(f"Stock vs NIFTY 1M RS: {x['RSN']:.2f}%"+(f" | Stock vs Sector: {x['RSS']:.2f}%" if pd.notna(x['RSS']) else ""))
         st.subheader("🛑 Trade Planning Reference");r1,r2,r3,r4=st.columns(4);r1.metric("Entry Reference",f"₹{x['Entry']:.2f}");r2.metric("Stop Loss",f"₹{x['SL']:.2f}");r3.metric("2R Target",f"₹{x['Target']:.2f}");r4.metric("Trail Ref (20DMA)",f"₹{x['Trail']:.2f}")
     st.subheader("🏅 Live Weekly Sector Leadership");secdf=weekly_sector_scores();st.dataframe(secdf.round(2),use_container_width=True,hide_index=True)
-with tabs[2]:st.info("26M ATH scanner remains part of the positional workflow.")
+with tabs[2]:
+    st.subheader("📈 Strict 26-Month ATH Breakout Scanner")
+    st.caption("Rule: Monthly CLOSE must be above every prior monthly HIGH, and the old ATH month must be at least 26 months old.")
+    try:
+        universe,universe_source=load_nifty500()
+        st.success(f"NIFTY 500 universe loaded: {len(universe)} symbols. 403-safe fallback active.")
+        st.caption(f"Universe source used: {universe_source}")
+    except Exception as e:
+        universe=pd.DataFrame();st.error(str(e))
+    if not universe.empty:
+        c1,c2,c3=st.columns(3);batch=c1.selectbox("Stocks to scan",[50,100,200,500],index=1);gap=c2.number_input("Minimum ATH gap (months)",12,120,26,1);near=c3.slider("Near ATH range",1,10,5,1)
+        if st.button(f"▶ Run 26M ATH Scan on {min(batch,len(universe))} stocks",type="primary",use_container_width=True):
+            scan_u=universe.head(int(batch)).copy();tickers=scan_u["Ticker"].tolist();rows=[];prog=st.progress(0,text="Downloading historical prices…")
+            try:raw26=dl(tickers,period="max",interval="1d",adjust=False)
+            except Exception as e:raw26=pd.DataFrame();st.error(f"Price download failed: {e}")
+            for i,(_,r) in enumerate(scan_u.iterrows()):
+                d=one(raw26,r["Ticker"],len(tickers));sig=monthly_26m_signal(d,int(gap))
+                if sig:rows.append({"Symbol":r["Symbol"],**sig})
+                prog.progress((i+1)/max(1,len(scan_u)),text=f"Scanning {i+1}/{len(scan_u)} — {r['Symbol']}")
+            prog.empty();st.session_state["scan26"]=pd.DataFrame(rows)
+        s26=st.session_state.get("scan26",pd.DataFrame())
+        if not s26.empty:
+            confirmed=s26[s26["Confirmed"]==True].copy();near_df=s26[(s26["Confirmed"]==False)&(s26["Breakout %"]>=-near)&(s26["Months Gap"]>=gap)].copy();a1,a2,a3=st.columns(3);a1.metric("Scanned",len(s26));a2.metric("✅ Confirmed 26M ATH",len(confirmed));a3.metric(f"Near ATH <= {near}%",len(near_df));show=pd.concat([confirmed.sort_values("Breakout %",ascending=False),near_df.sort_values("Breakout %",ascending=False)]).drop_duplicates("Symbol");st.dataframe(show,use_container_width=True,hide_index=True)
+        else:st.info("Run the scanner to generate results.")
 with tabs[3]:st.subheader("🔄 Weekly Sector Rotation / Leadership");st.dataframe(weekly_sector_scores().round(2),use_container_width=True,hide_index=True)
 with tabs[4]:st.info("Fundamental quality remains part of the long-term/positional workflow.")
