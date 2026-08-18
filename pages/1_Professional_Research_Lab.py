@@ -90,8 +90,7 @@ def load_nifty500():
             df=pd.read_csv(io.StringIO(text))
             cols={str(c).strip().lower():c for c in df.columns}
             symcol=cols.get("symbol")
-            if symcol is None:
-                symcol=df.columns[0]
+            if symcol is None:symcol=df.columns[0]
             syms=df[symcol].astype(str).str.strip().str.upper()
             syms=syms.str.replace(".NS","",regex=False)
             syms=syms[syms.str.match(r"^[A-Z0-9&.-]+$",na=False)]
@@ -101,8 +100,7 @@ def load_nifty500():
                 out["Ticker"]=out["Symbol"]+".NS"
                 return out.reset_index(drop=True),url
             errors.append(f"{url}: only {len(out)} valid symbols")
-        except Exception as e:
-            errors.append(f"{url}: {type(e).__name__} {e}")
+        except Exception as e:errors.append(f"{url}: {type(e).__name__} {e}")
     raise RuntimeError("NIFTY 500 universe unavailable after all fallbacks. "+" | ".join(errors[-4:]))
 
 def monthly_26m_signal(d,min_gap=26):
@@ -148,7 +146,7 @@ def weekly_sector_scores():
 
 def evaluate_setups(d,nc,sc,sector_score):
     c=pd.to_numeric(d["Close"],errors="coerce").dropna();o=pd.to_numeric(d["Open"],errors="coerce");h=pd.to_numeric(d["High"],errors="coerce");l=pd.to_numeric(d["Low"],errors="coerce");p=sf(c.iloc[-1]);green=bool(p>sf(o.iloc[-1]));sma=lambda k:c.rolling(k).mean();ema=lambda k:c.ewm(span=k,adjust=False).mean()
-    ma200=sma(200);ma198=sma(198);ma30=sma(30);ma28=sma(28);ma62=sma(62);ma20=sma(20);ema200=ema(200)
+    ma200=sma(200);ma198=sma(198);ma30=sma(30);ma28=sma(28);ma62=sma(62);ma44=sma(44);ma20=sma(20);ema200=ema(200)
     prev50=sf(h.iloc[-51:-1].max()) if len(h)>=51 else np.nan
     s1={"Close > 200DMA":p>sf(ma200.iloc[-1]),"Close > previous 50-day High":pd.notna(prev50) and p>prev50,"Green candle (Close > Open)":green}
     s2={"Close < 198DMA":p<sf(ma198.iloc[-1]),"Close > 200DMA":p>sf(ma200.iloc[-1]),"198DMA >= 200DMA":sf(ma198.iloc[-1])>=sf(ma200.iloc[-1])}
@@ -160,7 +158,9 @@ def evaluate_setups(d,nc,sc,sector_score):
     r=rsi_series(c);rnow=sf(r.iloc[-1]);rprev=sf(r.iloc[-2]) if len(r)>1 else np.nan;rising62=all(sf(ma62.iloc[-i])>sf(ma62.iloc[-i-1]) for i in range(1,6)) if len(ma62)>=7 else False;s6={"62DMA rising for 5 sessions":rising62,"RSI(14) > 30":pd.notna(rnow) and rnow>30,"RSI(14) < 43":pd.notna(rnow) and rnow<43,"RSI crossed above 35":pd.notna(rprev) and rprev<=35 and rnow>35}
     old_ma20_max=sf(ma20.iloc[-30:-10].max()) if len(ma20)>=30 else np.nan
     s7={"Current 20DMA > 10-days-ago Max(20, 20DMA)":pd.notna(old_ma20_max) and sf(ma20.iloc[-1])>old_ma20_max,"Daily Low <= Lower Bollinger Band(20,2)":sf(l.iloc[-1])<=sf(lower.iloc[-1]),"Daily Close > Lower Bollinger Band(20,2)":p>sf(lower.iloc[-1]),"Green candle (Close > Open)":green}
-    raw=[("#1 50D High + 200DMA + Green",s1),("#2 198/200 DMA Goldmine",s2),("#3 30MA + Green Candle",s3),("#4 Stock Outperform NIFTY-50",s4),("#5 Bollinger Squeeze Breakout",s5),("#6 R62 Trend + RSI Recovery",s6),("#7 20DMA Uptrend + LBB Bounce + Green",s7)];rows=[];details={}
+    rising44=all(sf(ma44.iloc[-i])>sf(ma44.iloc[-i-1]) for i in range(1,4)) if len(ma44)>=5 else False
+    s8={"44DMA rising for 3 sessions":rising44,"Daily Low <= 44DMA":sf(l.iloc[-1])<=sf(ma44.iloc[-1]),"Daily Close > 44DMA":p>sf(ma44.iloc[-1]),"Green candle (Close > Open)":green}
+    raw=[("#1 50D High + 200DMA + Green",s1),("#2 198/200 DMA Goldmine",s2),("#3 30MA + Green Candle",s3),("#4 Stock Outperform NIFTY-50",s4),("#5 Bollinger Squeeze Breakout",s5),("#6 R62 Trend + RSI Recovery",s6),("#7 20DMA Uptrend + LBB Bounce + Green",s7),("#8 44DMA Support + Green Candle",s8)];rows=[];details={}
     for name,checks in raw:
         passed=sum(bool(v) for v in checks.values());confirmed=all(checks.values());rows.append({"Confirmed":"✅ YES" if confirmed else "—","Technical Setup":name,"Status":"🟢 CONFIRMED" if confirmed else "⚪ Not Confirmed","Passed":f"{passed}/{len(checks)}","Priority":1 if confirmed else 2});details[name]=pd.DataFrame([{"Condition":k,"Result":"PASS ✅" if v else "FAIL ❌"} for k,v in checks.items()])
     table=pd.DataFrame(rows).sort_values(["Priority","Technical Setup"]).drop(columns=["Priority"])
@@ -171,7 +171,7 @@ def swing(symbol,mscore):
     if d.empty or n.empty:return None
     c=pd.to_numeric(d["Close"],errors="coerce").dropna();nc=pd.to_numeric(n["Close"],errors="coerce").dropna();sc=pd.to_numeric(sec["Close"],errors="coerce").dropna() if not sec.empty else pd.Series(dtype=float);price=sf(c.iloc[-1]);n20=sf(nc.rolling(20).mean().iloc[-1]);n50=sf(nc.rolling(50).mean().iloc[-1]);np_=sf(nc.iloc[-1]);market=100*sum([np_>n20,np_>n50,ret(nc,20)>0])/3
     sr4=ret(sc,20)-ret(nc,20) if len(sc)>21 else np.nan;sr13=ret(sc,65)-ret(nc,65) if len(sc)>66 else np.nan;sector_score=float(np.clip(50+8*(0 if pd.isna(sr4) else sr4)+4*(0 if pd.isna(sr13) else sr13),0,100));rsn=ret(c,20)-ret(nc,20);rss=ret(c,20)-ret(sc,20) if len(sc)>21 else np.nan;rs_score=float(np.clip(50+8*rsn+6*(0 if pd.isna(rss) else rss),0,100))
-    setups,details,confirmed,rsmeta=evaluate_setups(d,nc,sc,sector_score);setup_score=100*len(confirmed)/7;macro_component=float(np.clip(mscore*10,0,100));technical_gate=len(confirmed)>0;weighted=market*.15+sector_score*.20+rs_score*.20+setup_score*.40+macro_component*.05
+    setups,details,confirmed,rsmeta=evaluate_setups(d,nc,sc,sector_score);setup_score=100*len(confirmed)/8;macro_component=float(np.clip(mscore*10,0,100));technical_gate=len(confirmed)>0;weighted=market*.15+sector_score*.20+rs_score*.20+setup_score*.40+macro_component*.05
     label="🟢 BUY SETUP FOUND" if technical_gate and weighted>=55 else "🟡 TECHNICAL SETUP FOUND — CHECK CONTEXT" if technical_gate else "🔴 NO APPROVED TECHNICAL SETUP / WAIT"
     ma20=sf(c.rolling(20).mean().iloc[-1]);low20=sf(pd.to_numeric(d["Low"],errors="coerce").iloc[-20:].min());atr=atr14(d);stops=[x for x in [ma20,low20,price-1.5*atr if pd.notna(atr) else np.nan] if pd.notna(x) and x<price];stop=max(stops) if stops else price*.96;risk=price-stop;target=price+2*risk
     return {"Ticker":ticker,"Price":price,"Sector":sname,"As Of":pd.to_datetime(c.index[-1]).strftime("%Y-%m-%d"),"Final":label,"Score":weighted,"Gate":technical_gate,"Setups":setups,"SetupDetails":details,"Confirmed":confirmed,"Market":market,"SectorScore":sector_score,"RSScore":rs_score,"RSN":rsn,"RSS":rss,"RSI":rsi14(c),"Entry":price,"SL":stop,"Target":target,"Trail":ma20,"RSmeta":rsmeta}
@@ -183,11 +183,11 @@ tabs=st.tabs(["🌐 Long-Term / Positional","⚡ Swing Trading","📈 26M ATH Sc
 with tabs[0]:
     st.subheader("🌐 Macro Regime Diagnostics");st.info("Macro positional/long-term background filter है; direct BUY signal नहीं.");st.dataframe(macro,use_container_width=True,hide_index=True);st.markdown("**Decision:** Macro → Sector Leadership → 26M ATH → Fundamentals → Final Opportunity")
 with tabs[1]:
-    st.subheader("⚡ Live Swing Trading Engine — Your Technical Setups #1 to #7")
+    st.subheader("⚡ Live Swing Trading Engine — Your Technical Setups #1 to #8")
     st.caption("BUY technical gate आपके approved setups पर आधारित है. कोई approved setup confirmed न हो तो BUY नहीं आएगा.")
     c1,c2=st.columns([2,1]);symbol=c1.text_input("NSE Symbol",value="NMDC").strip().upper();run=c2.button("▶ Run Live Swing Analysis",type="primary",use_container_width=True)
     if run and symbol:
-        with st.spinner("Checking your 7 technical setups…"):
+        with st.spinner("Checking your 8 technical setups…"):
             try:st.session_state["sw"]=swing(symbol,mscore)
             except Exception as e:st.error(f"Analysis failed: {e}")
     x=st.session_state.get("sw")
@@ -195,8 +195,8 @@ with tabs[1]:
         st.header(f"{x['Final']} — {x['Ticker']}");m1,m2,m3,m4,m5=st.columns(5);m1.metric("Swing Score",f"{x['Score']:.1f}/100");m2.metric("Price",f"₹{x['Price']:.2f}");m3.metric("Sector",x['Sector']);m4.metric("RSI(14)",f"{x['RSI']:.1f}");m5.metric("As Of",x['As Of'])
         if x['Gate']:
             pills=''.join([f"<span class='confirmed-pill'>{name}</span>" for name in x['Confirmed']]);st.markdown(f"<div class='confirmed-banner'><b>✅ CONFIRMED TECHNICAL SETUP DETECTED</b><br>{pills}<br><span class='small'>Green confirmed setups are shown at the top of the table below for quick identification.</span></div>",unsafe_allow_html=True)
-        else:st.markdown("<div class='waitgate'><h3>🔒 BUY LOCKED</h3>None of Technical Setups #1–#7 is fully confirmed.</div>",unsafe_allow_html=True)
-        st.subheader("🧩 Technical Setups #1–#7 — Live Results")
+        else:st.markdown("<div class='waitgate'><h3>🔒 BUY LOCKED</h3>None of Technical Setups #1–#8 is fully confirmed.</div>",unsafe_allow_html=True)
+        st.subheader("🧩 Technical Setups #1–#8 — Live Results")
         st.dataframe(x['Setups'],use_container_width=True,hide_index=True,column_config={"Confirmed":st.column_config.TextColumn("✅ Confirmed?",width="small"),"Technical Setup":st.column_config.TextColumn("Technical Setup",width="large"),"Status":st.column_config.TextColumn("Status",width="medium"),"Passed":st.column_config.TextColumn("Conditions",width="small")})
         for name in x['Setups']['Technical Setup']:
             row=x['Setups'][x['Setups']['Technical Setup']==name].iloc[0];prefix="✅ CONFIRMED — " if row['Confirmed']=="✅ YES" else ""
