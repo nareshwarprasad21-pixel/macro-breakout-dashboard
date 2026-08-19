@@ -56,12 +56,39 @@ p, li, label { line-height: 1.55; }
   border: 1px solid var(--line);
   border-radius: 16px;
   padding: 16px 18px;
-  min-height: 112px;
+  min-height: 118px;
   box-shadow: 0 10px 28px rgba(0,0,0,.18);
+  overflow: visible !important;
 }
-[data-testid="stMetricLabel"] { color: #cbd5e1 !important; font-weight: 650; }
-[data-testid="stMetricValue"] { font-size: clamp(1.75rem, 2.45vw, 2.5rem) !important; letter-spacing: -.03em; }
+[data-testid="stMetricLabel"] {
+  color: #cbd5e1 !important;
+  font-weight: 650;
+}
+[data-testid="stMetricValue"] {
+  font-size: clamp(1.45rem, 2.0vw, 2.25rem) !important;
+  letter-spacing: -.03em;
+  line-height: 1.08 !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  white-space: normal !important;
+  word-break: normal !important;
+}
+[data-testid="stMetricValue"] > div,
+[data-testid="stMetricValue"] p {
+  overflow: visible !important;
+  text-overflow: clip !important;
+  white-space: normal !important;
+  line-height: 1.08 !important;
+}
 [data-testid="stMetricDelta"] { font-weight: 700; }
+
+/* Give metric columns room to display long regime/engine labels */
+[data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+  min-width: 0;
+}
+[data-testid="stHorizontalBlock"] [data-testid="stMetric"] {
+  width: 100%;
+}
 
 /* Tabs: larger, more breathable, clearer active state */
 .stTabs [data-baseweb="tab-list"] {
@@ -150,10 +177,22 @@ hr { border-color: rgba(148,163,184,.15) !important; margin: 1.7rem 0 !important
 /* Captions muted but readable */
 [data-testid="stCaptionContainer"], .stCaption { color: #91a0b6 !important; }
 
+/* Mid-size screens: shrink metric values before truncation occurs */
+@media (max-width: 1250px) {
+  [data-testid="stMetricValue"] {
+    font-size: clamp(1.3rem, 1.7vw, 1.85rem) !important;
+  }
+  [data-testid="stMetric"] {
+    min-height: 124px;
+    padding: 15px 15px;
+  }
+}
+
 /* Mobile/tablet */
 @media (max-width: 900px) {
   [data-testid="stMainBlockContainer"] { padding: 1.25rem .8rem 2rem !important; }
-  [data-testid="stMetric"] { min-height: 96px; padding: 13px 14px; }
+  [data-testid="stMetric"] { min-height: 104px; padding: 13px 14px; }
+  [data-testid="stMetricValue"] { font-size: 1.45rem !important; }
   .stTabs [data-baseweb="tab"] { height: 42px; padding: 0 12px; font-size: .88rem; }
   h1 { font-size: 2rem !important; }
   h2 { font-size: 1.5rem !important; }
