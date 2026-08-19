@@ -1,7 +1,7 @@
 {
   "$schema": "https://railway.com/railway.schema.json",
   "deploy": {
-    "startCommand": "python -m py_compile app.py graham.py pages/1_Professional_Research_Lab.py pages/2_Final_Opportunities.py && streamlit run app.py --server.address 0.0.0.0 --server.port $PORT --server.headless true",
+    "startCommand": "python inject_policy_stock_map.py && python -m py_compile app.py graham.py policy_stock_map.py pages/1_Professional_Research_Lab.py pages/2_Final_Opportunities.py && streamlit run app.py --server.address 0.0.0.0 --server.port $PORT --server.headless true",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 5
   }
