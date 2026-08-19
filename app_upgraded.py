@@ -8,6 +8,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 import yfinance as yf
+from policy_stock_map import render_policy_stock_mapping
 
 st.set_page_config(page_title="Macro + 26M ATH Breakout Dashboard", page_icon="📈", layout="wide")
 

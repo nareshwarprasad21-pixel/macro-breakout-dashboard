@@ -12,6 +12,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 import yfinance as yf
+from policy_stock_map import render_policy_stock_mapping
 
 st.set_page_config(page_title="Macro + 26M ATH Breakout Dashboard", page_icon="📈", layout="wide")
 
@@ -920,6 +921,9 @@ if st.session_state.get("show_policy_report", False):
     top5 = policy_df.nlargest(5, "10Y Opportunity Score")[["Sector / Theme", "10Y Opportunity Score", "Likely Beneficiary Sub-sectors"]]
     st.markdown("#### 🔭 Highest-visibility 10-year themes")
     st.dataframe(top5, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    render_policy_stock_mapping(policy_df)
 
     st.warning(
         "Policy support alone does not guarantee stock returns. Valuation, execution, competition, balance sheet, "
