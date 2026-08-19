@@ -56,7 +56,7 @@ p, li, label { line-height: 1.55; }
   border: 1px solid var(--line);
   border-radius: 16px;
   padding: 16px 18px;
-  min-height: 118px;
+  min-height: 132px;
   box-shadow: 0 10px 28px rgba(0,0,0,.18);
   overflow: visible !important;
 }
@@ -64,21 +64,32 @@ p, li, label { line-height: 1.55; }
   color: #cbd5e1 !important;
   font-weight: 650;
 }
-[data-testid="stMetricValue"] {
-  font-size: clamp(1.45rem, 2.0vw, 2.25rem) !important;
-  letter-spacing: -.03em;
-  line-height: 1.08 !important;
+
+/* Long metric values (regime / engine names) must wrap instead of ellipsis */
+[data-testid="stMetricValue"],
+[data-testid="stMetricValue"] > div,
+[data-testid="stMetricValue"] p,
+[data-testid="stMetricValue"] span,
+[data-testid="stMetricValue"] * {
   overflow: visible !important;
-  text-overflow: clip !important;
+  text-overflow: unset !important;
   white-space: normal !important;
   word-break: normal !important;
+  overflow-wrap: anywhere !important;
+  max-width: 100% !important;
+}
+[data-testid="stMetricValue"] {
+  display: block !important;
+  width: 100% !important;
+  font-size: clamp(1.25rem, 1.65vw, 1.85rem) !important;
+  letter-spacing: -.025em;
+  line-height: 1.12 !important;
 }
 [data-testid="stMetricValue"] > div,
 [data-testid="stMetricValue"] p {
-  overflow: visible !important;
-  text-overflow: clip !important;
-  white-space: normal !important;
-  line-height: 1.08 !important;
+  display: block !important;
+  width: 100% !important;
+  line-height: 1.12 !important;
 }
 [data-testid="stMetricDelta"] { font-weight: 700; }
 
@@ -177,22 +188,22 @@ hr { border-color: rgba(148,163,184,.15) !important; margin: 1.7rem 0 !important
 /* Captions muted but readable */
 [data-testid="stCaptionContainer"], .stCaption { color: #91a0b6 !important; }
 
-/* Mid-size screens: shrink metric values before truncation occurs */
+/* Mid-size screens: keep long values readable */
 @media (max-width: 1250px) {
   [data-testid="stMetricValue"] {
-    font-size: clamp(1.3rem, 1.7vw, 1.85rem) !important;
+    font-size: 1.22rem !important;
   }
   [data-testid="stMetric"] {
-    min-height: 124px;
-    padding: 15px 15px;
+    min-height: 136px;
+    padding: 15px 14px;
   }
 }
 
 /* Mobile/tablet */
 @media (max-width: 900px) {
   [data-testid="stMainBlockContainer"] { padding: 1.25rem .8rem 2rem !important; }
-  [data-testid="stMetric"] { min-height: 104px; padding: 13px 14px; }
-  [data-testid="stMetricValue"] { font-size: 1.45rem !important; }
+  [data-testid="stMetric"] { min-height: 118px; padding: 13px 14px; }
+  [data-testid="stMetricValue"] { font-size: 1.18rem !important; }
   .stTabs [data-baseweb="tab"] { height: 42px; padding: 0 12px; font-size: .88rem; }
   h1 { font-size: 2rem !important; }
   h2 { font-size: 1.5rem !important; }
