@@ -9,6 +9,24 @@ import yfinance as yf
 
 st.set_page_config(page_title="Professional Research Lab", page_icon="🧠", layout="wide")
 
+
+def text_metric(container, label, value):
+    """Responsive text card for long categorical values; avoids Streamlit metric ellipsis."""
+    safe_label = str(label).replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
+    safe_value = str(value).replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
+    container.markdown(
+        f"""
+        <div style="min-height:118px;padding:16px 18px;border:1px solid rgba(148,163,184,.18);
+                    border-radius:16px;background:linear-gradient(145deg,rgba(19,31,54,.96),rgba(10,20,38,.96));
+                    box-shadow:0 10px 28px rgba(0,0,0,.16);display:flex;flex-direction:column;justify-content:center;">
+          <div style="color:#cbd5e1;font-size:.86rem;font-weight:650;margin-bottom:9px;">{safe_label}</div>
+          <div style="color:#f8fafc;font-size:clamp(1.18rem,1.55vw,1.75rem);font-weight:500;
+                      line-height:1.16;white-space:normal;overflow-wrap:anywhere;word-break:normal;">{safe_value}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 st.markdown("""
 <style>
 .block-container{padding-top:2rem;max-width:1600px}
@@ -137,7 +155,7 @@ def swing(symbol,mscore):
     return {"Ticker":ticker,"Price":price,"Sector":sname,"As Of":pd.to_datetime(c.index[-1]).strftime("%Y-%m-%d"),"Final":label,"Score":weighted,"Gate":technical_gate,"Setups":setups,"SetupDetails":details,"Confirmed":confirmed,"Market":market,"SectorScore":sector_score,"RSScore":rs_score,"RSN":rsn,"RSS":rss,"RSI":rsi14(c),"Entry":price,"SL":stop,"Target":target,"Trail":ma20,"RSmeta":rsmeta}
 
 macro=macro_snapshot();mscore=macro_score(macro);regime="SUPPORTIVE / RISK-ON" if mscore>=7.5 else "MIXED / SELECTIVE" if mscore>=5 else "CAUTIOUS" if mscore>=3 else "RISK-OFF"
-st.title("Professional Investment Research Lab");a,b,c=st.columns(3);a.metric("Macro Score",f"{mscore:.1f}/10");b.metric("Macro Regime",regime);c.metric("Data Cache","20 min");tabs=st.tabs(["Long-Term / Positional","Swing Trading","26M ATH Scanner","Sector Rotation","Fundamentals"])
+st.title("Professional Investment Research Lab");a,b,c=st.columns(3);a.metric("Macro Score",f"{mscore:.1f}/10");text_metric(b,"Macro Regime",regime);c.metric("Data Cache","20 min");tabs=st.tabs(["Long-Term / Positional","Swing Trading","26M ATH Scanner","Sector Rotation","Fundamentals"])
 with tabs[0]:st.subheader("Macro Regime Diagnostics");st.info("Macro positional/long-term background filter है; direct BUY signal नहीं.");st.dataframe(macro,use_container_width=True,hide_index=True);st.markdown("**Decision:** Macro → Sector Leadership → 26M ATH → Fundamentals → Final Opportunity")
 with tabs[1]:
     st.subheader("Live Swing Trading Engine — Your Technical Setups #1 to #7");st.caption("BUY technical gate आपके approved setups पर आधारित है. कोई approved setup confirmed न हो तो BUY नहीं आएगा.");c1,c2=st.columns([2,1]);symbol=c1.text_input("NSE Symbol",value="NMDC").strip().upper();run=c2.button("Run Live Swing Analysis",type="primary",use_container_width=True)

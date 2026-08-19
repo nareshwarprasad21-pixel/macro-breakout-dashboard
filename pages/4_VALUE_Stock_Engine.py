@@ -12,6 +12,24 @@ from graham import fetch_graham_data
 
 st.set_page_config(page_title="VALUE Stock Engine", page_icon="💎", layout="wide")
 
+
+def text_metric(container, label, value):
+    """Responsive text card for long categorical values; avoids Streamlit metric ellipsis."""
+    safe_label = str(label).replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
+    safe_value = str(value).replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
+    container.markdown(
+        f"""
+        <div style="min-height:118px;padding:16px 18px;border:1px solid rgba(148,163,184,.18);
+                    border-radius:16px;background:linear-gradient(145deg,rgba(19,31,54,.96),rgba(10,20,38,.96));
+                    box-shadow:0 10px 28px rgba(0,0,0,.16);display:flex;flex-direction:column;justify-content:center;">
+          <div style="color:#cbd5e1;font-size:.86rem;font-weight:650;margin-bottom:9px;">{safe_label}</div>
+          <div style="color:#f8fafc;font-size:clamp(1.18rem,1.55vw,1.75rem);font-weight:500;
+                      line-height:1.16;white-space:normal;overflow-wrap:anywhere;word-break:normal;">{safe_value}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 st.markdown("""
 <style>
 .block-container {padding-top: 2rem; padding-bottom: 2rem; max-width: 1650px;}
@@ -419,9 +437,9 @@ macro_score, macro_regime, macro_cov, macro_df = macro_support()
 
 top1,top2,top3,top4=st.columns(4)
 top1.metric("Macro Support",f"{macro_score*10:.0f}/100")
-top2.metric("Macro Regime",macro_regime)
+text_metric(top2,"Macro Regime",macro_regime)
 top3.metric("Macro Coverage",f"{macro_cov}%")
-top4.metric("Engine","6-Factor VALUE")
+text_metric(top4,"Engine","6-Factor VALUE")
 
 with st.expander("📸 Rules taken from your notebook + chart photos", expanded=False):
     st.markdown("""
@@ -595,7 +613,7 @@ with tabs[4]:
     st.subheader("🌍 Macro Support")
     a,b,c=st.columns(3)
     a.metric("Macro Support",f"{macro_score*10:.0f}/100")
-    b.metric("Regime",macro_regime)
+    text_metric(b,"Regime",macro_regime)
     c.metric("Coverage",f"{macro_cov}%")
     if not macro_df.empty:
         st.dataframe(macro_df.sort_values("Contribution",ascending=False),use_container_width=True,hide_index=True)

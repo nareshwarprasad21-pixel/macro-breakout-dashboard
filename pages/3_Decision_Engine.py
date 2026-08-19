@@ -5,6 +5,24 @@ import streamlit as st
 import yfinance as yf
 
 st.set_page_config(page_title='Decision Engine', page_icon='🎯', layout='wide')
+
+
+def text_metric(container, label, value):
+    """Responsive text card for long categorical values; avoids Streamlit metric ellipsis."""
+    safe_label = str(label).replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
+    safe_value = str(value).replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
+    container.markdown(
+        f"""
+        <div style="min-height:118px;padding:16px 18px;border:1px solid rgba(148,163,184,.18);
+                    border-radius:16px;background:linear-gradient(145deg,rgba(19,31,54,.96),rgba(10,20,38,.96));
+                    box-shadow:0 10px 28px rgba(0,0,0,.16);display:flex;flex-direction:column;justify-content:center;">
+          <div style="color:#cbd5e1;font-size:.86rem;font-weight:650;margin-bottom:9px;">{safe_label}</div>
+          <div style="color:#f8fafc;font-size:clamp(1.18rem,1.55vw,1.75rem);font-weight:500;
+                      line-height:1.16;white-space:normal;overflow-wrap:anywhere;word-break:normal;">{safe_value}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 st.markdown('''<style>.block-container{max-width:1650px;padding-top:1.5rem}[data-testid="stMetric"]{border:1px solid rgba(128,128,128,.22);border-radius:12px;padding:10px}[data-testid="stMetricValue"]{white-space:normal;font-size:1.55rem}@media(max-width:900px){.block-container{padding:1rem .6rem!important}[data-testid="stMetricValue"]{font-size:1.2rem}h1{font-size:1.65rem!important}}</style>''',unsafe_allow_html=True)
 
 ASSETS={'NIFTY 50':'^NSEI','India VIX':'^INDIAVIX','USD/INR':'INR=X','Brent Crude':'BZ=F','Dollar Index':'DX-Y.NYB','US 10Y Yield':'^TNX','Gold':'GC=F'}
@@ -130,7 +148,7 @@ def why(r):
 st.title('🎯 Investment Decision Engine — 0 to 100')
 st.caption('Transparent decision-support: Macro + Policy alignment + Sector strength + strict 26M ATH + Fundamentals + Valuation. Scores prioritise research; they are not buy/sell advice.')
 ms,regime,mcov,drivers,stale,newest=macro_engine(); scan=st.session_state.get('pro_scan',pd.DataFrame()); monthlies=st.session_state.get('pro_monthlies',{}); stored=dict(st.session_state.get('decision_fund',{}))
-a,b,c,d=st.columns(4); a.metric('Macro Score',f'{ms:.0f}/100'); b.metric('Live Regime',regime); c.metric('Macro Coverage',f'{mcov}%'); d.metric('Scan Records',len(scan))
+a,b,c,d=st.columns(4); a.metric('Macro Score',f'{ms:.0f}/100'); text_metric(b,'Live Regime',regime); c.metric('Macro Coverage',f'{mcov}%'); d.metric('Scan Records',len(scan))
 updated='N/A' if pd.isna(newest) else newest.strftime('%Y-%m-%d'); st.caption(f'Market data as-of: **{updated}** · page generated: {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")} · macro cache TTL 20 min')
 if stale:st.warning('⚠️ Macro market feed may be stale or incomplete. Treat scores as provisional and verify exchange/broker data.')
 if mcov<80:st.warning(f'⚠️ Macro input coverage is only {mcov}%. Regime confidence is reduced.')
