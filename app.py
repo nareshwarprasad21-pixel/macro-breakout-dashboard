@@ -14,8 +14,10 @@ from reportlab.lib.styles import getSampleStyleSheet
 import yfinance as yf
 from graham import fetch_graham_data
 from policy_stock_map import render_policy_stock_mapping
+from ui_polish import apply_professional_ui
 
 st.set_page_config(page_title="Macro + 26M ATH Breakout Dashboard", page_icon="📈", layout="wide")
+apply_professional_ui()
 
 APP_TITLE = "India Macro + Policy + Sector Rotation + 26M ATH + Value Migration Professional Engine"
 NIFTY500_URLS = [
