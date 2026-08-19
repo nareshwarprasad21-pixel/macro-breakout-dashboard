@@ -1,0 +1,1 @@
+Redeploy trigger: Policy Theme -> Listed Stock Opportunity Map is implemented in main app and policy_stock_map.py. Triggered on 2026-08-19 to force Streamlit Cloud to pull the latest main branch.
