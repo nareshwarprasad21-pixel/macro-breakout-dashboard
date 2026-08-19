@@ -1,15 +1,32 @@
 [theme]
 base = "dark"
 primaryColor = "#7C5CFC"
-backgroundColor = "#0B1220"
+backgroundColor = "#0A1020"
 secondaryBackgroundColor = "#111A2E"
 textColor = "#F4F7FB"
-font = "sans serif"
+linkColor = "#8EA6FF"
+baseRadius = "0.75rem"
+buttonRadius = "0.75rem"
+borderColor = "#24324D"
+dataframeBorderColor = "#253553"
+dataframeHeaderBackgroundColor = "#151F35"
+showWidgetBorder = true
+showSidebarBorder = true
+chartCategoricalColors = ["#7C5CFC", "#22C55E", "#38BDF8", "#F59E0B", "#F43F5E", "#A78BFA", "#14B8A6", "#EAB308"]
+chartSequentialColors = ["#0F172A", "#172554", "#1E3A8A", "#2563EB", "#38BDF8"]
 
 [theme.sidebar]
-backgroundColor = "#0E172A"
+primaryColor = "#8B7CFF"
+backgroundColor = "#0C1528"
 secondaryBackgroundColor = "#16213A"
 textColor = "#F4F7FB"
+linkColor = "#9FB2FF"
+baseRadius = "0.65rem"
+buttonRadius = "0.65rem"
+borderColor = "#22304A"
+dataframeBorderColor = "#253553"
+dataframeHeaderBackgroundColor = "#151F35"
+showWidgetBorder = true
 
 [server]
 headless = true
