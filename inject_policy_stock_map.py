@@ -15,13 +15,33 @@ def patch_file(path: Path):
     text = path.read_text(encoding='utf-8')
     original = text
 
-    import_line = 'from policy_stock_map import render_policy_stock_mapping\n'
-    if import_line not in text:
+    # Policy-stock mapping import.
+    policy_import = 'from policy_stock_map import render_policy_stock_mapping\n'
+    if policy_import not in text:
         for anchor in ('from graham import fetch_graham_data\n', 'import yfinance as yf\n'):
             if anchor in text:
-                text = text.replace(anchor, anchor + import_line, 1)
+                text = text.replace(anchor, anchor + policy_import, 1)
                 break
 
+    # Global UI-only polish import.
+    ui_import = 'from ui_polish import apply_professional_ui\n'
+    if ui_import not in text:
+        for anchor in (policy_import, 'import yfinance as yf\n'):
+            if anchor in text:
+                text = text.replace(anchor, anchor + ui_import, 1)
+                break
+
+    # Apply polish immediately after set_page_config; no analytics are touched.
+    ui_call = 'apply_professional_ui()\n'
+    if ui_call not in text:
+        marker = 'st.set_page_config('
+        pos = text.find(marker)
+        if pos != -1:
+            end = text.find('\n', pos)
+            if end != -1:
+                text = text[:end+1] + ui_call + text[end+1:]
+
+    # Policy-stock mapping renderer.
     call = '    render_policy_stock_mapping(policy_df)\n'
     if call not in text:
         for anchor in (
@@ -47,4 +67,4 @@ for filename in ENTRY_FILES:
     except Exception as exc:
         print(f'Warning: {filename}: {exc}')
 
-print('Policy stock mapping integration ready:', ', '.join(changed) if changed else 'already integrated')
+print('Dashboard integrations ready:', ', '.join(changed) if changed else 'already integrated')
