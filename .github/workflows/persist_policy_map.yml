@@ -1,0 +1,36 @@
+name: Persist policy stock mapping
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Integrate policy stock map into app.py
+        run: python inject_policy_stock_map.py
+      - name: Verify Python syntax
+        run: python -m py_compile app.py policy_stock_map.py
+      - name: Commit persistent integration
+        run: |
+          if git diff --quiet -- app.py; then
+            echo "app.py already integrated"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.py
+          git commit -m "Persist policy stock mapping in app.py"
+          git push origin main
