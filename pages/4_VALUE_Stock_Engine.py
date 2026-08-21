@@ -461,11 +461,13 @@ nav1,nav2=st.columns(2)
 with nav1:
     if st.button("🚀 Open existing Value Migration module",use_container_width=True):
         st.session_state["app_page"]="value_migration"
-        st.switch_page("app.py")
+        # Streamlit Cloud launches this deployment from app_v5_rotation_map.py.
+        # Only the active entrypoint and files under pages/ are registered.
+        st.switch_page("app_v5_rotation_map.py")
 with nav2:
     if st.button("🧮 Open existing Graham Value Formula",use_container_width=True):
         st.session_state["app_page"]="graham"
-        st.switch_page("app.py")
+        st.switch_page("pages/5_VALUE_4_of_6_Qualification.py")
 
 tabs=st.tabs(["🔎 VALUE Finder","🅿️ P Factor","🅱️ B Factor","🏆 Leader","🌍 Macro Support","🧮 Graham Deep Check"])
 
