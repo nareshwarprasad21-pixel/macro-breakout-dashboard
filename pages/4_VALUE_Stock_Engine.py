@@ -460,10 +460,7 @@ The scanner checks recent weekly candles so a breakout remains visible for sever
 nav1,nav2=st.columns(2)
 with nav1:
     if st.button("🚀 Open existing Value Migration module",use_container_width=True):
-        st.session_state["app_page"]="value_migration"
-        # Streamlit Cloud launches this deployment from app_v5_rotation_map.py.
-        # Only the active entrypoint and files under pages/ are registered.
-        st.switch_page("app_v5_rotation_map.py")
+        st.switch_page("pages/6_Value_Migration.py")
 with nav2:
     if st.button("🧮 Open existing Graham Value Formula",use_container_width=True):
         st.session_state["app_page"]="graham"
