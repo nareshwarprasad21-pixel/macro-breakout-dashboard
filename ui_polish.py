@@ -1,8 +1,94 @@
+import pandas as pd
 import streamlit as st
 
 
+# Extra scanner sectors that are hidden inside broad NIFTY 500 industry buckets.
+# The main app still keeps the official NIFTY 500 Industry field; these rows are
+# duplicated only to make useful sector filters available in the scanner.
+_PHARMA_SYMBOLS = {
+    "ABBOTINDIA","AJANTPHARM","ALKEM","APLLTD","ASTRAZEN","AUROPHARMA","BIOCON",
+    "CAPLIPOINT","CIPLA","CONCORDBIO","DIVISLAB","DRREDDY","ERIS","FDC","GLAND",
+    "GLAXO","GLENMARK","GRANULES","IPCALAB","JBCHEPHARM","LAURUSLABS","LUPIN",
+    "MANKIND","NATCOPHARM","NEULANDLAB","PFIZER","PIRAMALPHARMA","SANOFI",
+    "SUNPHARMA","SYNGENE","TORNTPHARM","ZYDUSLIFE"
+}
+
+_HOSPITAL_DIAGNOSTIC_SYMBOLS = {
+    "APOLLOHOSP","ASTERDM","FORTIS","KIMS","LALPATHLAB","MAXHEALTH","MEDANTA",
+    "METROPOLIS","NH","THYROCARE","VIJAYA"
+}
+
+_DEFENCE_SYMBOLS = {
+    "HAL","BEL","BDL","BEML","MAZDOCK","COCHINSHIP","GRSE","DATAPATTNS","PARAS",
+    "SOLARINDS","ASTRAMICRO","BHARATFORG","MIDHANI","MTARTECH","DCXINDIA","ZENTEC",
+    "IDEAFORGE","DYNAMATECH"
+}
+
+_PRIVATE_BANK_SYMBOLS = {
+    "HDFCBANK","ICICIBANK","AXISBANK","KOTAKBANK","INDUSINDBK","FEDERALBNK","IDFCFIRSTB",
+    "BANDHANBNK","YESBANK","RBLBANK","CSBBANK","DCBBANK","CUB","KARURVYSYA","SOUTHBANK",
+    "AUBANK"
+}
+
+_PSU_BANK_SYMBOLS = {
+    "SBIN","BANKBARODA","PNB","CANBK","UNIONBANK","INDIANB","BANKINDIA","MAHABANK",
+    "CENTRALBK","IOB","UCOBANK","PSB"
+}
+
+
+def _augment_nifty500_sector_filters(df):
+    """Add scanner-only sector overlays while preserving official NIFTY 500 industries."""
+    if not isinstance(df, pd.DataFrame):
+        return df
+    required = {"Company Name", "Industry", "Symbol"}
+    if not required.issubset(df.columns):
+        return df
+
+    base = df.copy()
+    base["Symbol"] = base["Symbol"].astype(str).str.strip()
+    base["Company Name"] = base["Company Name"].astype(str)
+    extras = []
+
+    def add_overlay(label, mask):
+        x = base.loc[mask].copy()
+        if not x.empty:
+            x["Industry"] = label
+            extras.append(x)
+
+    # Sectoral splits that the official NIFTY 500 file normally folds into broader buckets.
+    add_overlay("Pharmaceuticals", base["Symbol"].isin(_PHARMA_SYMBOLS))
+    add_overlay("Hospitals & Diagnostics", base["Symbol"].isin(_HOSPITAL_DIAGNOSTIC_SYMBOLS))
+    add_overlay("Defence & Aerospace", base["Symbol"].isin(_DEFENCE_SYMBOLS))
+
+    bank_name = base["Company Name"].str.contains(r"\bBank\b", case=False, regex=True, na=False)
+    add_overlay("Banking", bank_name)
+    add_overlay("Private Banks", base["Symbol"].isin(_PRIVATE_BANK_SYMBOLS))
+    add_overlay("PSU Banks", base["Symbol"].isin(_PSU_BANK_SYMBOLS))
+
+    if not extras:
+        return base
+    out = pd.concat([base] + extras, ignore_index=True)
+    return out.drop_duplicates(subset=["Symbol", "Industry"], keep="first")
+
+
+def _install_nifty500_sector_overlays():
+    """Patch pandas.read_csv once so the existing scanner gets the extra sector filters."""
+    if getattr(pd.read_csv, "_aqpl_sector_overlay_patch", False):
+        return
+    original_read_csv = pd.read_csv
+
+    def patched_read_csv(*args, **kwargs):
+        df = original_read_csv(*args, **kwargs)
+        return _augment_nifty500_sector_filters(df)
+
+    patched_read_csv._aqpl_sector_overlay_patch = True
+    patched_read_csv._aqpl_original = original_read_csv
+    pd.read_csv = patched_read_csv
+
+
 def apply_professional_ui():
-    """UI-only polish. Does not change calculations, filters, scans, or trading logic."""
+    """Professional UI polish plus scanner sector overlays."""
+    _install_nifty500_sector_overlays()
     st.markdown(
         r"""
 <style>
