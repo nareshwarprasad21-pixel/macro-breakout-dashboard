@@ -1,7 +1,82 @@
+import io
+import requests
 import numpy as np
 import pandas as pd
 import streamlit as st
 import yfinance as yf
+
+# -----------------------------------------------------------------------------
+# Pharma / Healthcare classification bridge
+# -----------------------------------------------------------------------------
+# The NIFTY 500 constituent file uses a broad Healthcare bucket. For this
+# research dashboard we separate current NIFTY Pharma constituents into a
+# dedicated "Pharmaceuticals" bucket while leaving hospitals, diagnostics,
+# healthcare services, etc. in Healthcare. This uses the official NIFTY Pharma
+# constituent CSV dynamically, so the split follows index changes over time.
+_ORIGINAL_REQUESTS_GET = requests.get
+_PHARMA_SYMBOLS_CACHE = None
+
+
+def _official_nifty_pharma_symbols(headers=None):
+    global _PHARMA_SYMBOLS_CACHE
+    if _PHARMA_SYMBOLS_CACHE is not None:
+        return _PHARMA_SYMBOLS_CACHE
+
+    urls = [
+        "https://www.niftyindices.com/IndexConstituent/ind_niftypharma_list.csv",
+        "https://niftyindices.com/IndexConstituent/ind_niftypharma_list.csv",
+    ]
+    symbols = set()
+    hdrs = headers or {"User-Agent": "Mozilla/5.0"}
+    for url in urls:
+        try:
+            r = _ORIGINAL_REQUESTS_GET(url, timeout=12, headers=hdrs)
+            r.raise_for_status()
+            df = pd.read_csv(io.StringIO(r.text))
+            if "Symbol" in df.columns:
+                symbols = set(df["Symbol"].astype(str).str.strip())
+                if symbols:
+                    break
+        except Exception:
+            continue
+
+    _PHARMA_SYMBOLS_CACHE = symbols
+    return symbols
+
+
+def _pharma_aware_requests_get(url, *args, **kwargs):
+    response = _ORIGINAL_REQUESTS_GET(url, *args, **kwargs)
+    try:
+        if "ind_nifty500list.csv" not in str(url):
+            return response
+        if not getattr(response, "ok", False):
+            return response
+
+        pharma_symbols = _official_nifty_pharma_symbols(kwargs.get("headers"))
+        if not pharma_symbols:
+            return response
+
+        df = pd.read_csv(io.StringIO(response.text))
+        if "Symbol" not in df.columns or "Industry" not in df.columns:
+            return response
+
+        symbols = df["Symbol"].astype(str).str.strip()
+        df.loc[symbols.isin(pharma_symbols), "Industry"] = "Pharmaceuticals"
+
+        response._content = df.to_csv(index=False).encode("utf-8")
+        response.encoding = "utf-8"
+    except Exception:
+        # Never break the main dashboard if NSE's secondary constituent endpoint
+        # is temporarily unavailable. In that case the original Healthcare
+        # classification remains intact.
+        pass
+    return response
+
+
+if not getattr(requests.get, "_pharma_split_enabled", False):
+    _pharma_aware_requests_get._pharma_split_enabled = True
+    requests.get = _pharma_aware_requests_get
+
 
 # Curated representative NSE beneficiaries by long-run policy theme.
 # These are research mappings, not recommendations or guaranteed beneficiaries.
