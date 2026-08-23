@@ -2,9 +2,9 @@ import pandas as pd
 import streamlit as st
 
 
-# Extra scanner sectors that are hidden inside broad NIFTY 500 industry buckets.
-# The main app still keeps the official NIFTY 500 Industry field; these rows are
-# duplicated only to make useful sector filters available in the scanner.
+# Scanner sector overrides for important investable groups that are folded into
+# broader NIFTY 500 industries. We rewrite the Industry label on the same stock
+# row so the app's later drop_duplicates('Ticker') does not remove these groups.
 _PHARMA_SYMBOLS = {
     "ABBOTINDIA","AJANTPHARM","ALKEM","APLLTD","ASTRAZEN","AUROPHARMA","BIOCON",
     "CAPLIPOINT","CIPLA","CONCORDBIO","DIVISLAB","DRREDDY","ERIS","FDC","GLAND",
@@ -37,42 +37,34 @@ _PSU_BANK_SYMBOLS = {
 
 
 def _augment_nifty500_sector_filters(df):
-    """Add scanner-only sector overlays while preserving official NIFTY 500 industries."""
+    """Rewrite selected NIFTY 500 rows into useful scanner sector buckets."""
     if not isinstance(df, pd.DataFrame):
         return df
     required = {"Company Name", "Industry", "Symbol"}
     if not required.issubset(df.columns):
         return df
 
-    base = df.copy()
-    base["Symbol"] = base["Symbol"].astype(str).str.strip()
-    base["Company Name"] = base["Company Name"].astype(str)
-    extras = []
+    out = df.copy()
+    out["Symbol"] = out["Symbol"].astype(str).str.strip()
+    out["Company Name"] = out["Company Name"].astype(str)
 
-    def add_overlay(label, mask):
-        x = base.loc[mask].copy()
-        if not x.empty:
-            x["Industry"] = label
-            extras.append(x)
+    # Priority matters: specific investable buckets first.
+    out.loc[out["Symbol"].isin(_PHARMA_SYMBOLS), "Industry"] = "Pharmaceuticals"
+    out.loc[out["Symbol"].isin(_HOSPITAL_DIAGNOSTIC_SYMBOLS), "Industry"] = "Hospitals & Diagnostics"
+    out.loc[out["Symbol"].isin(_DEFENCE_SYMBOLS), "Industry"] = "Defence & Aerospace"
+    out.loc[out["Symbol"].isin(_PRIVATE_BANK_SYMBOLS), "Industry"] = "Private Banks"
+    out.loc[out["Symbol"].isin(_PSU_BANK_SYMBOLS), "Industry"] = "PSU Banks"
 
-    # Sectoral splits that the official NIFTY 500 file normally folds into broader buckets.
-    add_overlay("Pharmaceuticals", base["Symbol"].isin(_PHARMA_SYMBOLS))
-    add_overlay("Hospitals & Diagnostics", base["Symbol"].isin(_HOSPITAL_DIAGNOSTIC_SYMBOLS))
-    add_overlay("Defence & Aerospace", base["Symbol"].isin(_DEFENCE_SYMBOLS))
+    # Any other bank not covered above gets the broader Banking label.
+    bank_name = out["Company Name"].str.contains(r"\bBank\b", case=False, regex=True, na=False)
+    specific_banks = out["Symbol"].isin(_PRIVATE_BANK_SYMBOLS | _PSU_BANK_SYMBOLS)
+    out.loc[bank_name & ~specific_banks, "Industry"] = "Banking"
 
-    bank_name = base["Company Name"].str.contains(r"\bBank\b", case=False, regex=True, na=False)
-    add_overlay("Banking", bank_name)
-    add_overlay("Private Banks", base["Symbol"].isin(_PRIVATE_BANK_SYMBOLS))
-    add_overlay("PSU Banks", base["Symbol"].isin(_PSU_BANK_SYMBOLS))
-
-    if not extras:
-        return base
-    out = pd.concat([base] + extras, ignore_index=True)
-    return out.drop_duplicates(subset=["Symbol", "Industry"], keep="first")
+    return out
 
 
 def _install_nifty500_sector_overlays():
-    """Patch pandas.read_csv once so the existing scanner gets the extra sector filters."""
+    """Patch pandas.read_csv once so the existing scanner gets the sector overrides."""
     if getattr(pd.read_csv, "_aqpl_sector_overlay_patch", False):
         return
     original_read_csv = pd.read_csv
@@ -87,7 +79,7 @@ def _install_nifty500_sector_overlays():
 
 
 def apply_professional_ui():
-    """Professional UI polish plus scanner sector overlays."""
+    """Professional UI polish plus scanner sector overrides."""
     _install_nifty500_sector_overlays()
     st.markdown(
         r"""
@@ -106,7 +98,6 @@ def apply_professional_ui():
   --bad: #ef4444;
 }
 
-/* Main canvas */
 [data-testid="stAppViewContainer"] {
   background:
     radial-gradient(circle at 85% 0%, rgba(124,92,255,.10), transparent 28%),
@@ -119,24 +110,18 @@ def apply_professional_ui():
 }
 .block-container { max-width: 1500px; }
 
-/* Typography hierarchy */
 h1 { font-size: clamp(2rem, 3.0vw, 3.15rem) !important; line-height: 1.08 !important; letter-spacing: -.03em; }
 h2 { font-size: clamp(1.55rem, 2.2vw, 2.15rem) !important; margin-top: 1.35rem !important; }
 h3 { font-size: clamp(1.22rem, 1.65vw, 1.55rem) !important; }
 p, li, label { line-height: 1.55; }
 
-/* Sidebar */
 [data-testid="stSidebar"] {
   background: linear-gradient(180deg, #0b172b 0%, #0b1424 100%);
   border-right: 1px solid var(--line);
 }
 [data-testid="stSidebar"] [data-testid="stSidebarContent"] { padding-top: 1.15rem; }
-[data-testid="stSidebar"] button {
-  border-radius: 10px !important;
-  min-height: 42px;
-}
+[data-testid="stSidebar"] button { border-radius: 10px !important; min-height: 42px; }
 
-/* Metric cards */
 [data-testid="stMetric"] {
   background: linear-gradient(145deg, rgba(19,31,54,.96), rgba(10,20,38,.96));
   border: 1px solid var(--line);
@@ -146,12 +131,7 @@ p, li, label { line-height: 1.55; }
   box-shadow: 0 10px 28px rgba(0,0,0,.18);
   overflow: visible !important;
 }
-[data-testid="stMetricLabel"] {
-  color: #cbd5e1 !important;
-  font-weight: 650;
-}
-
-/* Long metric values (regime / engine names) must wrap instead of ellipsis */
+[data-testid="stMetricLabel"] { color: #cbd5e1 !important; font-weight: 650; }
 [data-testid="stMetricValue"],
 [data-testid="stMetricValue"] > div,
 [data-testid="stMetricValue"] p,
@@ -172,22 +152,11 @@ p, li, label { line-height: 1.55; }
   line-height: 1.12 !important;
 }
 [data-testid="stMetricValue"] > div,
-[data-testid="stMetricValue"] p {
-  display: block !important;
-  width: 100% !important;
-  line-height: 1.12 !important;
-}
+[data-testid="stMetricValue"] p { display: block !important; width: 100% !important; line-height: 1.12 !important; }
 [data-testid="stMetricDelta"] { font-weight: 700; }
+[data-testid="stHorizontalBlock"] > [data-testid="stColumn"] { min-width: 0; }
+[data-testid="stHorizontalBlock"] [data-testid="stMetric"] { width: 100%; }
 
-/* Give metric columns room to display long regime/engine labels */
-[data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
-  min-width: 0;
-}
-[data-testid="stHorizontalBlock"] [data-testid="stMetric"] {
-  width: 100%;
-}
-
-/* Tabs: larger, more breathable, clearer active state */
 .stTabs [data-baseweb="tab-list"] {
   gap: 8px;
   padding: 6px;
@@ -211,7 +180,6 @@ p, li, label { line-height: 1.55; }
   box-shadow: inset 0 -2px 0 var(--accent), 0 6px 18px rgba(124,92,255,.12);
 }
 
-/* Buttons */
 .stButton > button, .stDownloadButton > button, [data-testid="stLinkButton"] a {
   min-height: 44px;
   border-radius: 11px !important;
@@ -222,12 +190,8 @@ p, li, label { line-height: 1.55; }
   transform: translateY(-1px);
   box-shadow: 0 8px 24px rgba(0,0,0,.22);
 }
-button[kind="primary"] {
-  background: linear-gradient(135deg, #7455ff, #8b68ff) !important;
-  border: 0 !important;
-}
+button[kind="primary"] { background: linear-gradient(135deg, #7455ff, #8b68ff) !important; border: 0 !important; }
 
-/* Inputs */
 [data-baseweb="input"] > div,
 [data-baseweb="select"] > div,
 [data-baseweb="base-input"] {
@@ -236,7 +200,6 @@ button[kind="primary"] {
   background: rgba(17,29,50,.82) !important;
 }
 
-/* Dataframes/tables */
 [data-testid="stDataFrame"] {
   border: 1px solid var(--line);
   border-radius: 14px;
@@ -245,47 +208,30 @@ button[kind="primary"] {
 }
 [data-testid="stDataFrame"] [role="columnheader"] { font-weight: 750 !important; }
 
-/* Expanders */
 [data-testid="stExpander"] {
   border: 1px solid var(--line) !important;
   border-radius: 13px !important;
   background: rgba(15,23,42,.44);
   overflow: hidden;
 }
-
-/* Info / warning / success / error */
 [data-testid="stAlert"] {
   border-radius: 13px;
   border-width: 1px;
   box-shadow: 0 7px 20px rgba(0,0,0,.10);
 }
-
-/* Dividers */
 hr { border-color: rgba(148,163,184,.15) !important; margin: 1.7rem 0 !important; }
-
-/* Plot containers */
 [data-testid="stPlotlyChart"] {
   background: rgba(10,20,38,.42);
   border: 1px solid var(--line);
   border-radius: 15px;
   padding: 5px;
 }
-
-/* Captions muted but readable */
 [data-testid="stCaptionContainer"], .stCaption { color: #91a0b6 !important; }
 
-/* Mid-size screens: keep long values readable */
 @media (max-width: 1250px) {
-  [data-testid="stMetricValue"] {
-    font-size: 1.22rem !important;
-  }
-  [data-testid="stMetric"] {
-    min-height: 136px;
-    padding: 15px 14px;
-  }
+  [data-testid="stMetricValue"] { font-size: 1.22rem !important; }
+  [data-testid="stMetric"] { min-height: 136px; padding: 15px 14px; }
 }
-
-/* Mobile/tablet */
 @media (max-width: 900px) {
   [data-testid="stMainBlockContainer"] { padding: 1.25rem .8rem 2rem !important; }
   [data-testid="stMetric"] { min-height: 118px; padding: 13px 14px; }
