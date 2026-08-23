@@ -112,7 +112,8 @@ m4.metric("Improving Fastest",imp["Sector"])
 
 fig=go.Figure()
 b=rebase(close[BENCHMARK])
-fig.add_trace(go.Scatter(x=b.index,y=b,name="NIFTY 50",mode="lines",line={"width":4,"color":"#111827"},hovertemplate="NIFTY 50<br>%{x|%d %b %Y}<br>Rebased: %{y:.1f}<extra></extra>"))
+# NIFTY 50 is the permanent benchmark: bright white and thicker so it stays visible on the dark dashboard.
+fig.add_trace(go.Scatter(x=b.index,y=b,name="NIFTY 50",mode="lines",line={"width":4,"color":"#FFFFFF"},hovertemplate="NIFTY 50<br>%{x|%d %b %Y}<br>Rebased: %{y:.1f}<extra></extra>"))
 for name in selected:
     ticker=SECTORS[name]
     if ticker not in close:
