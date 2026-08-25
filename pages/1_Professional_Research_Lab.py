@@ -135,7 +135,7 @@ def macro_score(df):
 def _nse_index_close(session, index_name, from_date, to_date):
     """Fetch official NSE Indices historical daily closes."""
     try:
-        response = session.post(
+        response = requests.post(
             "https://www.niftyindices.com/Backpage.aspx/getHistoricaldatatabletoString",
             json={"name": index_name, "startDate": from_date.strftime("%d-%b-%Y"),
                   "endDate": to_date.strftime("%d-%b-%Y")},
