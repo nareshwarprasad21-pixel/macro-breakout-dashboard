@@ -132,14 +132,92 @@ def macro_score(df):
 
 @st.cache_data(ttl=1200,show_spinner=False)
 def weekly_sector_scores():
-    ts=["^NSEI"]+list(SECTORS.values());raw=dl(ts,"2y","1wk",True);b=one(raw,"^NSEI",len(ts))
-    if b.empty:return pd.DataFrame()
-    bc=b["Close"];rows=[]
-    for name,t in SECTORS.items():
-        d=one(raw,t,len(ts))
-        if d.empty:continue
-        s=d["Close"];r4=ret(s,4)-ret(bc,4);r13=ret(s,13)-ret(bc,13);r26=ret(s,26)-ret(bc,26);r52=ret(s,52)-ret(bc,52);acc=r4-r13;score=np.nanmean([r13,r26,r52]);status="LEADER" if score>0 and r13>0 and r26>0 else "IMPROVING" if r4>0 and acc>0 else "WEAKENING" if score>0 else "LAGGARD";rows.append({"Sector":name,"Status":status,"4W RS":r4,"13W RS":r13,"26W RS":r26,"52W RS":r52,"Acceleration":acc,"RS Score":score})
-    return pd.DataFrame(rows).sort_values(["RS Score","Acceleration"],ascending=False)
+    # Leadership is confirmed only from completed Friday closes.
+    # 13W (3M) = recent leadership; 26W (6M) = confirmation.
+    today = pd.Timestamp.now(tz="Asia/Kolkata").tz_localize(None)
+    last_friday = today.normalize() - pd.Timedelta(days=(today.weekday() - 4) % 7)
+    # Before Friday's market close, keep the previous completed Friday.
+    if today.weekday() == 4 and today.hour < 16:
+        last_friday -= pd.Timedelta(days=7)
+
+    tickers = ["^NSEI"] + list(SECTORS.values())
+    raw = dl(tickers, "2y", "1d", True)
+    benchmark = one(raw, "^NSEI", len(tickers))
+    if benchmark.empty:
+        return pd.DataFrame()
+
+    nifty_weekly = (
+        pd.to_numeric(benchmark["Close"], errors="coerce")
+        .dropna()
+        .resample("W-FRI")
+        .last()
+        .loc[:last_friday]
+    )
+    rows = []
+
+    for name, ticker in SECTORS.items():
+        sector_data = one(raw, ticker, len(tickers))
+        if sector_data.empty:
+            rows.append({"Sector": name, "Status": "DATA UNAVAILABLE", "4W RS": np.nan,
+                         "13W RS": np.nan, "26W RS": np.nan, "52W RS": np.nan,
+                         "Acceleration": np.nan, "RS Score": np.nan})
+            continue
+
+        sector_weekly = (
+            pd.to_numeric(sector_data["Close"], errors="coerce")
+            .dropna()
+            .resample("W-FRI")
+            .last()
+            .loc[:last_friday]
+        )
+        aligned = pd.concat(
+            [sector_weekly.rename("sector"), nifty_weekly.rename("nifty")], axis=1
+        ).dropna()
+
+        if len(aligned) < 27:
+            rows.append({"Sector": name, "Status": "DATA UNAVAILABLE", "4W RS": np.nan,
+                         "13W RS": np.nan, "26W RS": np.nan, "52W RS": np.nan,
+                         "Acceleration": np.nan, "RS Score": np.nan})
+            continue
+
+        sector_close, nifty_close = aligned["sector"], aligned["nifty"]
+        r4 = ret(sector_close, 4) - ret(nifty_close, 4)
+        r13 = ret(sector_close, 13) - ret(nifty_close, 13)
+        r26 = ret(sector_close, 26) - ret(nifty_close, 26)
+        r52 = ret(sector_close, 52) - ret(nifty_close, 52)
+        acceleration = r4 - r13 if pd.notna(r4) and pd.notna(r13) else np.nan
+
+        if pd.isna(r13) or pd.isna(r26):
+            status = "DATA UNAVAILABLE"
+            score = np.nan
+        elif r13 > 0 and r26 > 0:
+            status = "LEADER"
+            score = 0.60 * r13 + 0.40 * r26
+        elif r13 > 0 and r26 <= 0:
+            status = "IMPROVING"
+            score = 0.60 * r13 + 0.40 * r26
+        elif r13 <= 0 and r26 > 0:
+            status = "WEAKENING"
+            score = 0.60 * r13 + 0.40 * r26
+        else:
+            status = "LAGGARD"
+            score = 0.60 * r13 + 0.40 * r26
+
+        rows.append({"Sector": name, "Status": status, "4W RS": r4, "13W RS": r13,
+                     "26W RS": r26, "52W RS": r52, "Acceleration": acceleration,
+                     "RS Score": score})
+
+    result = pd.DataFrame(rows)
+    if result.empty:
+        return result
+    status_order = {"LEADER": 0, "IMPROVING": 1, "WEAKENING": 2,
+                    "LAGGARD": 3, "DATA UNAVAILABLE": 4}
+    result["_order"] = result["Status"].map(status_order).fillna(5)
+    return result.sort_values(
+        ["_order", "RS Score", "Acceleration"],
+        ascending=[True, False, False],
+        na_position="last",
+    ).drop(columns="_order")
 
 def evaluate_setups(d,nc,sc,sector_score):
     c=pd.to_numeric(d["Close"],errors="coerce").dropna();o=pd.to_numeric(d["Open"],errors="coerce");h=pd.to_numeric(d["High"],errors="coerce");l=pd.to_numeric(d["Low"],errors="coerce");p=sf(c.iloc[-1]);green=bool(p>sf(o.iloc[-1]));sma=lambda k:c.rolling(k).mean();ema=lambda k:c.ewm(span=k,adjust=False).mean();ma200=sma(200);ma198=sma(198);ma30=sma(30);ma28=sma(28);ma62=sma(62);ma20=sma(20);ema200=ema(200);prev50=sf(h.iloc[-51:-1].max()) if len(h)>=51 else np.nan
@@ -194,5 +272,8 @@ with tabs[2]:
         if not s26.empty:
             confirmed=s26[s26["Confirmed"]==True].copy();near_df=s26[(s26["Confirmed"]==False)&(s26["Breakout %"]>=-near)&(s26["Months Gap"]>=gap)].copy();a1,a2,a3=st.columns(3);a1.metric("Scanned",len(s26));a2.metric("Confirmed 26M ATH",len(confirmed));a3.metric(f"Near ATH <= {near}%",len(near_df));show=pd.concat([confirmed.sort_values("Breakout %",ascending=False),near_df.sort_values("Breakout %",ascending=False)]).drop_duplicates("Symbol");st.dataframe(show,use_container_width=True,hide_index=True)
         else:st.info("Run the scanner to generate results.")
-with tabs[3]:st.subheader("Weekly Sector Rotation / Leadership");st.dataframe(weekly_sector_scores().round(2),use_container_width=True,hide_index=True)
+with tabs[3]:
+    st.subheader("Weekly Sector Rotation / Leadership")
+    st.caption("LEADER = 13W (3M) RS > 0 और 26W (6M) RS > 0 बनाम NIFTY 50. Status केवल completed Friday close पर update होता है; missing data को LAGGARD नहीं माना जाता.")
+    st.dataframe(weekly_sector_scores().round(2),use_container_width=True,hide_index=True)
 with tabs[4]:st.info("Fundamental quality remains part of the long-term/positional workflow.")
