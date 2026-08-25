@@ -1,4 +1,5 @@
 import io
+import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
@@ -132,48 +133,32 @@ def macro_score(df):
     return float(np.clip(5+5*(s/w),0,10)) if w else 5.0
 
 def _nse_index_close(session, index_name, from_date, to_date):
-    """Fetch official NSE historical daily closes for one index."""
+    """Fetch official NSE Indices historical daily closes."""
     try:
-        response = session.get(
-            "https://www.nseindia.com/api/historical/indicesHistory",
-            params={
-                "indexType": index_name,
-                "from": from_date.strftime("%d-%m-%Y"),
-                "to": to_date.strftime("%d-%m-%Y"),
-            },
+        response = session.post(
+            "https://www.niftyindices.com/Backpage.aspx/getHistoricaldatatabletoString",
+            json={"name": index_name, "startDate": from_date.strftime("%d-%b-%Y"),
+                  "endDate": to_date.strftime("%d-%b-%Y")},
+            headers={"Accept": "application/json, text/javascript, */*; q=0.01",
+                     "Content-Type": "application/json; charset=UTF-8",
+                     "Referer": "https://www.niftyindices.com/reports/historical-data",
+                     "X-Requested-With": "XMLHttpRequest"},
             timeout=8,
         )
         response.raise_for_status()
         payload = response.json()
-        block = payload.get("data", {}) if isinstance(payload, dict) else {}
-        records = (
-            block.get("indexCloseOnlineRecords")
-            or block.get("data")
-            or payload.get("data")
-            or []
-        )
-        if isinstance(records, dict):
-            records = records.get("indexCloseOnlineRecords", [])
+        records = payload.get("d", []) if isinstance(payload, dict) else []
+        if isinstance(records, str):
+            records = json.loads(records)
         frame = pd.DataFrame(records)
         if frame.empty:
             return pd.Series(dtype=float)
-
-        date_col = next(
-            (c for c in ["EOD_TIMESTAMP", "TIMESTAMP", "HistoricalDate", "Date"] if c in frame.columns),
-            None,
-        )
-        close_col = next(
-            (c for c in ["EOD_CLOSE_INDEX_VAL", "CLOSE_INDEX_VAL", "CLOSE", "Close"] if c in frame.columns),
-            None,
-        )
+        date_col = next((c for c in ["HistoricalDate", "Date", "EOD_TIMESTAMP", "TIMESTAMP"] if c in frame.columns), None)
+        close_col = next((c for c in ["CLOSE", "Close", "EOD_CLOSE_INDEX_VAL", "CLOSE_INDEX_VAL"] if c in frame.columns), None)
         if not date_col or not close_col:
             return pd.Series(dtype=float)
-
         dates = pd.to_datetime(frame[date_col], errors="coerce", dayfirst=True)
-        closes = pd.to_numeric(
-            frame[close_col].astype(str).str.replace(",", "", regex=False),
-            errors="coerce",
-        )
+        closes = pd.to_numeric(frame[close_col].astype(str).str.replace(",", "", regex=False), errors="coerce")
         series = pd.Series(closes.values, index=dates).dropna().sort_index()
         return series[~series.index.duplicated(keep="last")]
     except Exception:
@@ -181,13 +166,8 @@ def _nse_index_close(session, index_name, from_date, to_date):
 
 
 def _yahoo_daily_close(raw, ticker, total):
+    # Fast batch-only backup; never block the page with many sequential retries.
     data = one(raw, ticker, total)
-    if data.empty:
-        try:
-            single_raw = dl(ticker, "2y", "1d", True)
-            data = one(single_raw, ticker, 1)
-        except Exception:
-            return pd.Series(dtype=float)
     if data.empty or "Close" not in data:
         return pd.Series(dtype=float)
     return pd.to_numeric(data["Close"], errors="coerce").dropna()
@@ -206,12 +186,12 @@ def weekly_sector_scores():
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136 Safari/537.36",
         "Accept": "application/json,text/plain,*/*",
         "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.nseindia.com/reports-indices-historical-index-data",
+        "Referer": "https://www.niftyindices.com/reports/historical-data",
     }
     session = requests.Session()
     session.headers.update(headers)
     try:
-        session.get("https://www.nseindia.com/", timeout=15)
+        session.get("https://www.niftyindices.com/reports/historical-data", timeout=6)
     except Exception:
         pass
 
@@ -363,6 +343,6 @@ with tabs[2]:
         else:st.info("Run the scanner to generate results.")
 with tabs[3]:
     st.subheader("Weekly Sector Rotation / Leadership")
-    st.caption("Primary data: NSE Official | Backup: Yahoo Finance. LEADER = 13W (3M) RS > 0 और 26W (6M) RS > 0 बनाम NIFTY 50. Status completed Friday close पर update होता है.")
+    st.caption("Primary data: NSE Indices Official | Backup: Yahoo Finance. LEADER = 13W (3M) RS > 0 और 26W (6M) RS > 0 बनाम NIFTY 50. Status completed Friday close पर update होता है.")
     st.dataframe(weekly_sector_scores().round(2),use_container_width=True,hide_index=True)
 with tabs[4]:st.info("Fundamental quality remains part of the long-term/positional workflow.")
