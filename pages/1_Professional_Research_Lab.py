@@ -143,8 +143,17 @@ def weekly_sector_scores():
     tickers = ["^NSEI"] + list(SECTORS.values())
     raw = dl(tickers, "2y", "1d", True)
     benchmark = one(raw, "^NSEI", len(tickers))
+    # A bad sector ticker must not make the NIFTY benchmark disappear.
     if benchmark.empty:
-        return pd.DataFrame()
+        benchmark_raw = dl("^NSEI", "2y", "1d", True)
+        benchmark = one(benchmark_raw, "^NSEI", 1)
+    if benchmark.empty:
+        return pd.DataFrame([
+            {"Sector": name, "Status": "DATA UNAVAILABLE", "4W RS": np.nan,
+             "13W RS": np.nan, "26W RS": np.nan, "52W RS": np.nan,
+             "Acceleration": np.nan, "RS Score": np.nan}
+            for name in SECTORS
+        ])
 
     nifty_weekly = (
         pd.to_numeric(benchmark["Close"], errors="coerce")
@@ -157,6 +166,10 @@ def weekly_sector_scores():
 
     for name, ticker in SECTORS.items():
         sector_data = one(raw, ticker, len(tickers))
+        # Retry an individual sector when Yahoo's multi-ticker response omits it.
+        if sector_data.empty:
+            sector_raw = dl(ticker, "2y", "1d", True)
+            sector_data = one(sector_raw, ticker, 1)
         if sector_data.empty:
             rows.append({"Sector": name, "Status": "DATA UNAVAILABLE", "4W RS": np.nan,
                          "13W RS": np.nan, "26W RS": np.nan, "52W RS": np.nan,
