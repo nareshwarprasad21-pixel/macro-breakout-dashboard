@@ -196,10 +196,8 @@ def weekly_sector_scores():
         pass
 
     tickers = ["^NSEI"] + list(SECTORS.values())
-    try:
-        yahoo_raw = dl(tickers, "2y", "1d", True)
-    except Exception:
-        yahoo_raw = pd.DataFrame()
+    # Sector Leadership uses official NSE Indices history only.
+    yahoo_raw = pd.DataFrame()
 
     # Fetch official histories concurrently so a slow index cannot block the page.
     nse_names = ["NIFTY 50"] + [name.upper() for name in SECTORS]
@@ -343,6 +341,6 @@ with tabs[2]:
         else:st.info("Run the scanner to generate results.")
 with tabs[3]:
     st.subheader("Weekly Sector Rotation / Leadership")
-    st.caption("Primary data: NSE Indices Official | Backup: Yahoo Finance. LEADER = 13W (3M) RS > 0 और 26W (6M) RS > 0 बनाम NIFTY 50. Status completed Friday close पर update होता है.")
+    st.caption("Data source: NSE Indices Official. LEADER = 13W (3M) RS > 0 और 26W (6M) RS > 0 बनाम NIFTY 50. Status completed Friday close पर update होता है.")
     st.dataframe(weekly_sector_scores().round(2),use_container_width=True,hide_index=True)
 with tabs[4]:st.info("Fundamental quality remains part of the long-term/positional workflow.")
