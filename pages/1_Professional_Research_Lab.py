@@ -1,4 +1,5 @@
 import io
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import numpy as np
@@ -140,7 +141,7 @@ def _nse_index_close(session, index_name, from_date, to_date):
                 "from": from_date.strftime("%d-%m-%Y"),
                 "to": to_date.strftime("%d-%m-%Y"),
             },
-            timeout=20,
+            timeout=8,
         )
         response.raise_for_status()
         payload = response.json()
@@ -220,7 +221,16 @@ def weekly_sector_scores():
     except Exception:
         yahoo_raw = pd.DataFrame()
 
-    nifty_daily = _nse_index_close(session, "NIFTY 50", from_date, today)
+    # Fetch official histories concurrently so a slow index cannot block the page.
+    nse_names = ["NIFTY 50"] + [name.upper() for name in SECTORS]
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = {
+            name: pool.submit(_nse_index_close, session, name, from_date, today)
+            for name in nse_names
+        }
+        nse_data = {name: future.result() for name, future in futures.items()}
+
+    nifty_daily = nse_data.get("NIFTY 50", pd.Series(dtype=float))
     nifty_source = "NSE Official"
     if nifty_daily.empty:
         nifty_daily = _yahoo_daily_close(yahoo_raw, "^NSEI", len(tickers))
@@ -238,7 +248,7 @@ def weekly_sector_scores():
     rows = []
 
     for name, ticker in SECTORS.items():
-        sector_daily = _nse_index_close(session, name.upper(), from_date, today)
+        sector_daily = nse_data.get(name.upper(), pd.Series(dtype=float))
         source = "NSE Official"
         if sector_daily.empty:
             sector_daily = _yahoo_daily_close(yahoo_raw, ticker, len(tickers))
