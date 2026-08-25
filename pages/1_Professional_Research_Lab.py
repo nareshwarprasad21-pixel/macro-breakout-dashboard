@@ -131,65 +131,136 @@ def macro_score(df):
     return float(np.clip(5+5*(s/w),0,10)) if w else 5.0
 
 @st.cache_data(ttl=1200,show_spinner=False)
+def _nse_index_close(session, index_name, from_date, to_date):
+    """Fetch official NSE historical daily closes for one index."""
+    try:
+        response = session.get(
+            "https://www.nseindia.com/api/historical/indicesHistory",
+            params={
+                "indexType": index_name,
+                "from": from_date.strftime("%d-%m-%Y"),
+                "to": to_date.strftime("%d-%m-%Y"),
+            },
+            timeout=20,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        block = payload.get("data", {}) if isinstance(payload, dict) else {}
+        records = (
+            block.get("indexCloseOnlineRecords")
+            or block.get("data")
+            or payload.get("data")
+            or []
+        )
+        if isinstance(records, dict):
+            records = records.get("indexCloseOnlineRecords", [])
+        frame = pd.DataFrame(records)
+        if frame.empty:
+            return pd.Series(dtype=float)
+
+        date_col = next(
+            (c for c in ["EOD_TIMESTAMP", "TIMESTAMP", "HistoricalDate", "Date"] if c in frame.columns),
+            None,
+        )
+        close_col = next(
+            (c for c in ["EOD_CLOSE_INDEX_VAL", "CLOSE_INDEX_VAL", "CLOSE", "Close"] if c in frame.columns),
+            None,
+        )
+        if not date_col or not close_col:
+            return pd.Series(dtype=float)
+
+        dates = pd.to_datetime(frame[date_col], errors="coerce", dayfirst=True)
+        closes = pd.to_numeric(
+            frame[close_col].astype(str).str.replace(",", "", regex=False),
+            errors="coerce",
+        )
+        series = pd.Series(closes.values, index=dates).dropna().sort_index()
+        return series[~series.index.duplicated(keep="last")]
+    except Exception:
+        return pd.Series(dtype=float)
+
+
+def _yahoo_daily_close(raw, ticker, total):
+    data = one(raw, ticker, total)
+    if data.empty:
+        try:
+            single_raw = dl(ticker, "2y", "1d", True)
+            data = one(single_raw, ticker, 1)
+        except Exception:
+            return pd.Series(dtype=float)
+    if data.empty or "Close" not in data:
+        return pd.Series(dtype=float)
+    return pd.to_numeric(data["Close"], errors="coerce").dropna()
+
+
+@st.cache_data(ttl=21600, show_spinner=False)
 def weekly_sector_scores():
-    # Leadership is confirmed only from completed Friday closes.
-    # 13W (3M) = recent leadership; 26W (6M) = confirmation.
+    # NSE is primary. Yahoo is used only when the official NSE request fails.
     today = pd.Timestamp.now(tz="Asia/Kolkata").tz_localize(None)
     last_friday = today.normalize() - pd.Timedelta(days=(today.weekday() - 4) % 7)
-    # Before Friday's market close, keep the previous completed Friday.
     if today.weekday() == 4 and today.hour < 16:
         last_friday -= pd.Timedelta(days=7)
 
+    from_date = (today - pd.Timedelta(days=430)).normalize()
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136 Safari/537.36",
+        "Accept": "application/json,text/plain,*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.nseindia.com/reports-indices-historical-index-data",
+    }
+    session = requests.Session()
+    session.headers.update(headers)
+    try:
+        session.get("https://www.nseindia.com/", timeout=15)
+    except Exception:
+        pass
+
     tickers = ["^NSEI"] + list(SECTORS.values())
-    raw = dl(tickers, "2y", "1d", True)
-    benchmark = one(raw, "^NSEI", len(tickers))
-    # A bad sector ticker must not make the NIFTY benchmark disappear.
-    if benchmark.empty:
-        benchmark_raw = dl("^NSEI", "2y", "1d", True)
-        benchmark = one(benchmark_raw, "^NSEI", 1)
-    if benchmark.empty:
+    try:
+        yahoo_raw = dl(tickers, "2y", "1d", True)
+    except Exception:
+        yahoo_raw = pd.DataFrame()
+
+    nifty_daily = _nse_index_close(session, "NIFTY 50", from_date, today)
+    nifty_source = "NSE Official"
+    if nifty_daily.empty:
+        nifty_daily = _yahoo_daily_close(yahoo_raw, "^NSEI", len(tickers))
+        nifty_source = "Yahoo Backup"
+
+    if nifty_daily.empty:
         return pd.DataFrame([
-            {"Sector": name, "Status": "DATA UNAVAILABLE", "4W RS": np.nan,
-             "13W RS": np.nan, "26W RS": np.nan, "52W RS": np.nan,
-             "Acceleration": np.nan, "RS Score": np.nan}
+            {"Sector": name, "Status": "DATA UNAVAILABLE", "Data Source": "Unavailable",
+             "4W RS": np.nan, "13W RS": np.nan, "26W RS": np.nan,
+             "52W RS": np.nan, "Acceleration": np.nan, "RS Score": np.nan}
             for name in SECTORS
         ])
 
-    nifty_weekly = (
-        pd.to_numeric(benchmark["Close"], errors="coerce")
-        .dropna()
-        .resample("W-FRI")
-        .last()
-        .loc[:last_friday]
-    )
+    nifty_weekly = nifty_daily.resample("W-FRI").last().loc[:last_friday]
     rows = []
 
     for name, ticker in SECTORS.items():
-        sector_data = one(raw, ticker, len(tickers))
-        # Retry an individual sector when Yahoo's multi-ticker response omits it.
-        if sector_data.empty:
-            sector_raw = dl(ticker, "2y", "1d", True)
-            sector_data = one(sector_raw, ticker, 1)
-        if sector_data.empty:
-            rows.append({"Sector": name, "Status": "DATA UNAVAILABLE", "4W RS": np.nan,
+        sector_daily = _nse_index_close(session, name.upper(), from_date, today)
+        source = "NSE Official"
+        if sector_daily.empty:
+            sector_daily = _yahoo_daily_close(yahoo_raw, ticker, len(tickers))
+            source = "Yahoo Backup"
+
+        if sector_daily.empty:
+            rows.append({"Sector": name, "Status": "DATA UNAVAILABLE",
+                         "Data Source": "Unavailable", "4W RS": np.nan,
                          "13W RS": np.nan, "26W RS": np.nan, "52W RS": np.nan,
                          "Acceleration": np.nan, "RS Score": np.nan})
             continue
 
-        sector_weekly = (
-            pd.to_numeric(sector_data["Close"], errors="coerce")
-            .dropna()
-            .resample("W-FRI")
-            .last()
-            .loc[:last_friday]
-        )
+        sector_weekly = sector_daily.resample("W-FRI").last().loc[:last_friday]
         aligned = pd.concat(
             [sector_weekly.rename("sector"), nifty_weekly.rename("nifty")], axis=1
         ).dropna()
 
         if len(aligned) < 27:
-            rows.append({"Sector": name, "Status": "DATA UNAVAILABLE", "4W RS": np.nan,
-                         "13W RS": np.nan, "26W RS": np.nan, "52W RS": np.nan,
+            rows.append({"Sector": name, "Status": "DATA UNAVAILABLE",
+                         "Data Source": source, "4W RS": np.nan, "13W RS": np.nan,
+                         "26W RS": np.nan, "52W RS": np.nan,
                          "Acceleration": np.nan, "RS Score": np.nan})
             continue
 
@@ -201,23 +272,19 @@ def weekly_sector_scores():
         acceleration = r4 - r13 if pd.notna(r4) and pd.notna(r13) else np.nan
 
         if pd.isna(r13) or pd.isna(r26):
-            status = "DATA UNAVAILABLE"
-            score = np.nan
+            status, score = "DATA UNAVAILABLE", np.nan
         elif r13 > 0 and r26 > 0:
-            status = "LEADER"
-            score = 0.60 * r13 + 0.40 * r26
+            status, score = "LEADER", 0.60 * r13 + 0.40 * r26
         elif r13 > 0 and r26 <= 0:
-            status = "IMPROVING"
-            score = 0.60 * r13 + 0.40 * r26
+            status, score = "IMPROVING", 0.60 * r13 + 0.40 * r26
         elif r13 <= 0 and r26 > 0:
-            status = "WEAKENING"
-            score = 0.60 * r13 + 0.40 * r26
+            status, score = "WEAKENING", 0.60 * r13 + 0.40 * r26
         else:
-            status = "LAGGARD"
-            score = 0.60 * r13 + 0.40 * r26
+            status, score = "LAGGARD", 0.60 * r13 + 0.40 * r26
 
-        rows.append({"Sector": name, "Status": status, "4W RS": r4, "13W RS": r13,
-                     "26W RS": r26, "52W RS": r52, "Acceleration": acceleration,
+        rows.append({"Sector": name, "Status": status, "Data Source": source,
+                     "4W RS": r4, "13W RS": r13, "26W RS": r26,
+                     "52W RS": r52, "Acceleration": acceleration,
                      "RS Score": score})
 
     result = pd.DataFrame(rows)
@@ -287,6 +354,6 @@ with tabs[2]:
         else:st.info("Run the scanner to generate results.")
 with tabs[3]:
     st.subheader("Weekly Sector Rotation / Leadership")
-    st.caption("LEADER = 13W (3M) RS > 0 और 26W (6M) RS > 0 बनाम NIFTY 50. Status केवल completed Friday close पर update होता है; missing data को LAGGARD नहीं माना जाता.")
+    st.caption("Primary data: NSE Official | Backup: Yahoo Finance. LEADER = 13W (3M) RS > 0 और 26W (6M) RS > 0 बनाम NIFTY 50. Status completed Friday close पर update होता है.")
     st.dataframe(weekly_sector_scores().round(2),use_container_width=True,hide_index=True)
 with tabs[4]:st.info("Fundamental quality remains part of the long-term/positional workflow.")
