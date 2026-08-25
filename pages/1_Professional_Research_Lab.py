@@ -130,7 +130,6 @@ def macro_score(df):
         s+=np.tanh((direction*x)/5.0)*weight;w+=weight
     return float(np.clip(5+5*(s/w),0,10)) if w else 5.0
 
-@st.cache_data(ttl=1200,show_spinner=False)
 def _nse_index_close(session, index_name, from_date, to_date):
     """Fetch official NSE historical daily closes for one index."""
     try:
