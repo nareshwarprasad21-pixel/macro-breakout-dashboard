@@ -100,6 +100,26 @@ def build_race(price, mapping):
         rows.append({"Sector":name,"Ticker":t,"3M RS vs NIFTY %":r3,"6M RS vs NIFTY %":r6,"Acceleration %":accel,"Weekly RS Slope":slope,"Race Score":score,"Race Status":label})
     return pd.DataFrame(rows).sort_values("Race Score",ascending=False).reset_index(drop=True)
 
+def choose_race_candidate(df):
+    """Choose actionable Race candidate by status priority, never by raw score alone.
+
+    Priority follows the strategy intent:
+    1) Emerging Leader — new leadership developing now
+    2) Strong Leader — established leader still rising
+    Weakening and Underperformer are explicitly excluded.
+    """
+    if df is None or df.empty:
+        return None
+    for status_text in ["EMERGING LEADER", "STRONG LEADER"]:
+        eligible = df[df["Race Status"].str.contains(status_text, na=False)].copy()
+        if not eligible.empty:
+            eligible = eligible.sort_values(
+                ["Race Score", "Acceleration %", "Weekly RS Slope"],
+                ascending=[False, False, False],
+            )
+            return eligible.iloc[0]
+    return None
+
 with st.spinner("Calculating weekly 3M/6M Race Strategy..."):
     px=closes([BENCHMARK]+list(SECTORS.values()),"1y")
     race=build_race(px,SECTORS)
@@ -110,12 +130,13 @@ if race.empty:
 
 strong=race[race["Race Status"].str.contains("STRONG")]
 emerging=race[race["Race Status"].str.contains("EMERGING")]
+sector_candidate = choose_race_candidate(race)
 
 c1,c2,c3,c4=st.columns(4)
 c1.metric("Strong Leaders",len(strong))
 c2.metric("Emerging Leaders",len(emerging))
-c3.metric("Top Race Sector",race.iloc[0]["Sector"])
-c4.metric("Top Race Score",f"{race.iloc[0]['Race Score']:.1f}")
+c3.metric("Top Eligible Sector",sector_candidate["Sector"] if sector_candidate is not None else "None")
+c4.metric("Candidate Race Score",f"{sector_candidate['Race Score']:.1f}" if sector_candidate is not None else "—")
 
 st.subheader("Sector Race Leaderboard")
 st.dataframe(race[["Sector","3M RS vs NIFTY %","6M RS vs NIFTY %","Acceleration %","Weekly RS Slope","Race Score","Race Status"]].style.format({"3M RS vs NIFTY %":"{:.2f}","6M RS vs NIFTY %":"{:.2f}","Acceleration %":"{:.2f}","Weekly RS Slope":"{:.3f}","Race Score":"{:.2f}"}),use_container_width=True,hide_index=True)
@@ -128,11 +149,11 @@ fig.add_vline(x=0,line_dash="dash")
 fig.update_layout(title="Race Map — 6M Strength vs 3M Strength",xaxis_title="6M RS vs NIFTY (%)",yaxis_title="3M RS vs NIFTY (%)",height=600,showlegend=False)
 st.plotly_chart(fig,use_container_width=True)
 
-st.info("Rule: Leader is not decided by one week's rank. STRONG = 3M & 6M outperform NIFTY + weekly RS rising. EMERGING = recent 3M strength/rising RS while longer 6M leadership is still developing.")
+st.info("Rule: Leader is not decided by one week's rank. STRONG = 3M & 6M outperform NIFTY + weekly RS rising. EMERGING = recent 3M strength/rising RS while longer 6M leadership is still developing. WEAKENING and UNDERPERFORMER are never selected as Current Race candidates.")
 
 st.divider()
 st.subheader("Sector → Stock Race")
-default_sector=(emerging.iloc[0]["Sector"] if not emerging.empty else race.iloc[0]["Sector"])
+default_sector=(sector_candidate["Sector"] if sector_candidate is not None else race.iloc[0]["Sector"])
 choices=[x for x in race["Sector"].tolist() if x in STOCKS]
 idx=choices.index(default_sector) if default_sector in choices else 0
 sel=st.selectbox("Select leader / emerging sector",choices,index=idx)
@@ -143,7 +164,18 @@ srace=build_race(spx,stock_map)
 if not srace.empty:
     srace=srace.rename(columns={"Sector":"Stock"})
     st.dataframe(srace[["Stock","3M RS vs NIFTY %","6M RS vs NIFTY %","Acceleration %","Weekly RS Slope","Race Score","Race Status"]].style.format({"3M RS vs NIFTY %":"{:.2f}","6M RS vs NIFTY %":"{:.2f}","Acceleration %":"{:.2f}","Weekly RS Slope":"{:.3f}","Race Score":"{:.2f}"}),use_container_width=True,hide_index=True)
-    st.success(f"Current Race candidate in {sel}: {srace.iloc[0]['Stock']} — {srace.iloc[0]['Race Status']}. Confirm actual weekly/ATH/sideways breakout before entry.")
+
+    candidate = choose_race_candidate(srace)
+    if candidate is not None:
+        st.success(
+            f"Current Race candidate in {sel}: {candidate['Stock']} — {candidate['Race Status']}. "
+            "Confirm actual weekly/ATH/sideways breakout before entry."
+        )
+    else:
+        st.warning(
+            f"No actionable Race candidate in {sel} right now. "
+            "All available stocks are WEAKENING or UNDERPERFORMING; wait for an EMERGING or STRONG LEADER."
+        )
 else:
     st.warning("Stock Race data unavailable for this sector.")
 
@@ -154,7 +186,8 @@ st.markdown("""
 2. **Timeframe:** Weekly trend; use **3M + 6M** together.  
 3. **Sector:** Prefer rising/outperforming sectors; detect **Emerging Leaders**, not only already-extended #1 sectors.  
 4. **Stock:** Run the same race inside the selected sector.  
-5. **Entry confirmation:** Relative-strength winner alone is **not a Buy**; confirm ATH / sideways / weekly breakout.  
-6. **Risk:** Weak/unclear leadership → cash is allowed; keep sector concentration controlled.  
+5. **Candidate priority:** **Emerging Leader → Strong Leader**. Never select **Weakening / Underperformer** as Current Race Candidate.  
+6. **Entry confirmation:** Relative-strength winner alone is **not a Buy**; confirm ATH / sideways / weekly breakout.  
+7. **Risk:** Weak/unclear leadership → cash is allowed; keep sector concentration controlled.  
 """)
 st.caption("Research tool only. Scores are heuristic relative-strength rankings, not guaranteed returns or investment advice.")
