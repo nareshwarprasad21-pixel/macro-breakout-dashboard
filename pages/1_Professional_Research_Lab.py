@@ -150,215 +150,34 @@ def macro_score(df):
         s+=np.tanh((direction*x)/5.0)*weight;w+=weight
     return float(np.clip(5+5*(s/w),0,10)) if w else 5.0
 
-def _nse_index_close(session, index_name, from_date, to_date):
-    """Fetch official NSE Indices historical daily closes."""
-    try:
-        response = requests.post(
-            "https://www.niftyindices.com/Backpage.aspx/getHistoricaldatatabletoString",
-            json={"name": index_name, "startDate": from_date.strftime("%d-%b-%Y"),
-                  "endDate": to_date.strftime("%d-%b-%Y")},
-            headers={"Accept": "application/json, text/javascript, */*; q=0.01",
-                     "Content-Type": "application/json; charset=UTF-8",
-                     "Referer": "https://www.niftyindices.com/reports/historical-data",
-                     "X-Requested-With": "XMLHttpRequest"},
-            timeout=8,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        records = payload.get("d", []) if isinstance(payload, dict) else []
-        if isinstance(records, str):
-            records = json.loads(records)
-        frame = pd.DataFrame(records)
-        if frame.empty:
-            return pd.Series(dtype=float)
-        date_col = next((c for c in ["HistoricalDate", "Date", "EOD_TIMESTAMP", "TIMESTAMP"] if c in frame.columns), None)
-        close_col = next((c for c in ["CLOSE", "Close", "EOD_CLOSE_INDEX_VAL", "CLOSE_INDEX_VAL"] if c in frame.columns), None)
-        if not date_col or not close_col:
-            return pd.Series(dtype=float)
-        dates = pd.to_datetime(frame[date_col], errors="coerce", dayfirst=True)
-        closes = pd.to_numeric(frame[close_col].astype(str).str.replace(",", "", regex=False), errors="coerce")
-        series = pd.Series(closes.values, index=dates).dropna().sort_index()
-        return series[~series.index.duplicated(keep="last")]
-    except Exception:
-        return pd.Series(dtype=float)
-
-
 def _secret(name):
-    """Read an optional Streamlit secret without crashing local/dev runs."""
-    try:
-        return str(st.secrets.get(name, "")).strip()
-    except Exception:
-        return ""
+    try:return str(st.secrets.get(name,"")).strip()
+    except Exception:return ""
 
-
-def _upstox_index_close(index_name, from_date, to_date, access_token):
-    """Fetch one-day index candles from Upstox Historical Candle API V3."""
-    instrument_key = UPSTOX_INDEX_KEYS.get(index_name.upper())
-    if not access_token or not instrument_key:
-        return pd.Series(dtype=float)
-    try:
-        encoded_key = requests.utils.quote(instrument_key, safe="")
-        url = (
-            f"https://api.upstox.com/v3/historical-candle/{encoded_key}/days/1/"
-            f"{to_date:%Y-%m-%d}/{from_date:%Y-%m-%d}"
-        )
-        response = requests.get(
-            url,
-            headers={"Accept":"application/json", "Authorization":f"Bearer {access_token}"},
-            timeout=12,
-        )
-        response.raise_for_status()
-        candles = response.json().get("data", {}).get("candles", [])
-        if not candles:
-            return pd.Series(dtype=float)
-        frame = pd.DataFrame(candles)
-        dates = pd.to_datetime(frame.iloc[:, 0], errors="coerce", utc=True).dt.tz_convert("Asia/Kolkata").dt.tz_localize(None)
-        closes = pd.to_numeric(frame.iloc[:, 4], errors="coerce")
-        series = pd.Series(closes.values, index=dates).dropna().sort_index()
-        return series[~series.index.duplicated(keep="last")]
-    except Exception:
-        return pd.Series(dtype=float)
-
-
-def _yahoo_daily_close(raw, ticker, total):
-    # Fast batch-only backup; never block the page with many sequential retries.
-    data = one(raw, ticker, total)
-    if data.empty or "Close" not in data:
-        return pd.Series(dtype=float)
-    return pd.to_numeric(data["Close"], errors="coerce").dropna()
-
-
-@st.cache_data(ttl=21600, show_spinner=False)
+@st.cache_data(ttl=21600,show_spinner=False)
 def weekly_sector_scores():
-    # Broker API is primary because NSE blocks some cloud regions. NSE and
-    # Yahoo remain automatic fallbacks so the page never hangs on one provider.
-    today = pd.Timestamp.now(tz="Asia/Kolkata").tz_localize(None)
-    last_friday = today.normalize() - pd.Timedelta(days=(today.weekday() - 4) % 7)
-    if today.weekday() == 4 and today.hour < 16:
-        last_friday -= pd.Timedelta(days=7)
+    today=pd.Timestamp.now(tz="Asia/Kolkata").tz_localize(None);last_friday=today.normalize()-pd.Timedelta(days=(today.weekday()-4)%7)
+    if today.weekday()==4 and today.hour<16:last_friday-=pd.Timedelta(days=7)
+    tickers=["^NSEI"]+list(SECTORS.values())
+    try:raw=dl(tickers,period="2y",interval="1d",adjust=False)
+    except Exception:return pd.DataFrame()
+    nifty=_yahoo_daily_close(raw,"^NSEI",len(tickers))
+    if nifty.empty:return pd.DataFrame()
+    nw=nifty.resample("W-FRI").last().loc[:last_friday];rows=[]
+    for name,ticker in SECTORS.items():
+        s=_yahoo_daily_close(raw,ticker,len(tickers))
+        if s.empty:continue
+        sw=s.resample("W-FRI").last().loc[:last_friday];a=pd.concat([sw.rename("s"),nw.rename("n")],axis=1).dropna()
+        if len(a)<27:continue
+        r4=ret(a["s"],4)-ret(a["n"],4);r13=ret(a["s"],13)-ret(a["n"],13);r26=ret(a["s"],26)-ret(a["n"],26);r52=ret(a["s"],52)-ret(a["n"],52);acc=r4-r13 if pd.notna(r4) and pd.notna(r13) else np.nan
+        status="LEADER" if r13>0 and r26>0 else "IMPROVING" if r13>0 else "WEAKENING" if r26>0 else "LAGGARD";score=.6*r13+.4*r26
+        rows.append({"Sector":name,"Status":status,"Data Source":"Yahoo Backup","4W RS":r4,"13W RS":r13,"26W RS":r26,"52W RS":r52,"Acceleration":acc,"RS Score":score})
+    return pd.DataFrame(rows)
 
-    from_date = (today - pd.Timedelta(days=430)).normalize()
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136 Safari/537.36",
-        "Accept": "application/json,text/plain,*/*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.niftyindices.com/reports/historical-data",
-    }
-    session = requests.Session()
-    session.headers.update(headers)
-    try:
-        session.get("https://www.niftyindices.com/reports/historical-data", timeout=6)
-    except Exception:
-        pass
-
-    tickers = ["^NSEI"] + list(SECTORS.values())
-    access_token = _secret("UPSTOX_ACCESS_TOKEN")
-    try:
-        yahoo_raw = dl(tickers, period="2y", interval="1d", adjust=False)
-    except Exception:
-        yahoo_raw = pd.DataFrame()
-
-    # Fetch official histories concurrently so a slow index cannot block the page.
-    nse_names = ["NIFTY 50"] + [name.upper() for name in SECTORS]
-    with ThreadPoolExecutor(max_workers=6) as pool:
-        futures = {
-            name: pool.submit(_nse_index_close, session, name, from_date, today)
-            for name in nse_names
-        }
-        nse_data = {name: future.result() for name, future in futures.items()}
-
-    upstox_data = {}
-    if access_token:
-        with ThreadPoolExecutor(max_workers=6) as pool:
-            futures = {
-                name: pool.submit(_upstox_index_close, name, from_date, today, access_token)
-                for name in nse_names
-            }
-            upstox_data = {name: future.result() for name, future in futures.items()}
-
-    nifty_daily = upstox_data.get("NIFTY 50", pd.Series(dtype=float))
-    nifty_source = "Upstox"
-    if nifty_daily.empty:
-        nifty_daily = nse_data.get("NIFTY 50", pd.Series(dtype=float))
-        nifty_source = "NSE Official"
-    if nifty_daily.empty:
-        nifty_daily = _yahoo_daily_close(yahoo_raw, "^NSEI", len(tickers))
-        nifty_source = "Yahoo Backup"
-
-    if nifty_daily.empty:
-        return pd.DataFrame([
-            {"Sector": name, "Status": "DATA UNAVAILABLE", "Data Source": "Unavailable",
-             "4W RS": np.nan, "13W RS": np.nan, "26W RS": np.nan,
-             "52W RS": np.nan, "Acceleration": np.nan, "RS Score": np.nan}
-            for name in SECTORS
-        ])
-
-    nifty_weekly = nifty_daily.resample("W-FRI").last().loc[:last_friday]
-    rows = []
-
-    for name, ticker in SECTORS.items():
-        sector_daily = upstox_data.get(name.upper(), pd.Series(dtype=float))
-        source = "Upstox"
-        if sector_daily.empty:
-            sector_daily = nse_data.get(name.upper(), pd.Series(dtype=float))
-            source = "NSE Official"
-        if sector_daily.empty:
-            sector_daily = _yahoo_daily_close(yahoo_raw, ticker, len(tickers))
-            source = "Yahoo Backup"
-
-        if sector_daily.empty:
-            rows.append({"Sector": name, "Status": "DATA UNAVAILABLE",
-                         "Data Source": "Unavailable", "4W RS": np.nan,
-                         "13W RS": np.nan, "26W RS": np.nan, "52W RS": np.nan,
-                         "Acceleration": np.nan, "RS Score": np.nan})
-            continue
-
-        sector_weekly = sector_daily.resample("W-FRI").last().loc[:last_friday]
-        aligned = pd.concat(
-            [sector_weekly.rename("sector"), nifty_weekly.rename("nifty")], axis=1
-        ).dropna()
-
-        if len(aligned) < 27:
-            rows.append({"Sector": name, "Status": "DATA UNAVAILABLE",
-                         "Data Source": source, "4W RS": np.nan, "13W RS": np.nan,
-                         "26W RS": np.nan, "52W RS": np.nan,
-                         "Acceleration": np.nan, "RS Score": np.nan})
-            continue
-
-        sector_close, nifty_close = aligned["sector"], aligned["nifty"]
-        r4 = ret(sector_close, 4) - ret(nifty_close, 4)
-        r13 = ret(sector_close, 13) - ret(nifty_close, 13)
-        r26 = ret(sector_close, 26) - ret(nifty_close, 26)
-        r52 = ret(sector_close, 52) - ret(nifty_close, 52)
-        acceleration = r4 - r13 if pd.notna(r4) and pd.notna(r13) else np.nan
-
-        if pd.isna(r13) or pd.isna(r26):
-            status, score = "DATA UNAVAILABLE", np.nan
-        elif r13 > 0 and r26 > 0:
-            status, score = "LEADER", 0.60 * r13 + 0.40 * r26
-        elif r13 > 0 and r26 <= 0:
-            status, score = "IMPROVING", 0.60 * r13 + 0.40 * r26
-        elif r13 <= 0 and r26 > 0:
-            status, score = "WEAKENING", 0.60 * r13 + 0.40 * r26
-        else:
-            status, score = "LAGGARD", 0.60 * r13 + 0.40 * r26
-
-        rows.append({"Sector": name, "Status": status, "Data Source": source,
-                     "4W RS": r4, "13W RS": r13, "26W RS": r26,
-                     "52W RS": r52, "Acceleration": acceleration,
-                     "RS Score": score})
-
-    result = pd.DataFrame(rows)
-    if result.empty:
-        return result
-    status_order = {"LEADER": 0, "IMPROVING": 1, "WEAKENING": 2,
-                    "LAGGARD": 3, "DATA UNAVAILABLE": 4}
-    result["_order"] = result["Status"].map(status_order).fillna(5)
-    return result.sort_values(
-        ["_order", "RS Score", "Acceleration"],
-        ascending=[True, False, False],
-        na_position="last",
-    ).drop(columns="_order")
+def _yahoo_daily_close(raw,ticker,total):
+    data=one(raw,ticker,total)
+    if data.empty or "Close" not in data:return pd.Series(dtype=float)
+    return pd.to_numeric(data["Close"],errors="coerce").dropna()
 
 def evaluate_setups(d,nc,sc,sector_score):
     c=pd.to_numeric(d["Close"],errors="coerce").dropna();o=pd.to_numeric(d["Open"],errors="coerce");h=pd.to_numeric(d["High"],errors="coerce");l=pd.to_numeric(d["Low"],errors="coerce");p=sf(c.iloc[-1]);green=bool(p>sf(o.iloc[-1]));sma=lambda k:c.rolling(k).mean();ema=lambda k:c.ewm(span=k,adjust=False).mean();ma200=sma(200);ma198=sma(198);ma30=sma(30);ma28=sma(28);ma62=sma(62);ma20=sma(20);ema200=ema(200);prev50=sf(h.iloc[-51:-1].max()) if len(h)>=51 else np.nan
@@ -399,7 +218,8 @@ with tabs[2]:
     try:universe,universe_source=load_nifty500();st.success(f"NIFTY 500 universe loaded: {len(universe)} symbols. 403-safe fallback active.");st.caption(f"Universe source used: {universe_source}")
     except Exception as e:universe=pd.DataFrame();st.error(str(e))
     if not universe.empty:
-        c1,c2,c3=st.columns(3);batch=c1.selectbox("Stocks to scan",[50,100,200,500],index=1);gap=c2.number_input("Minimum ATH gap (months)",12,120,26,1);near=c3.slider("Near ATH range",1,10,5,1)
+        c1,c2,c3=st.columns(3);batch=c1.selectbox("Stocks to scan",[50,100,200,500],index=1);gap=c2.number_input("Minimum ATH gap (months)",12,120,26,1);near=c3.slider("Near ATH Range (%)",1,10,5,1,help="Example: 5 means a stock up to 5% below its old ATH can be included in Near ATH results.")
+        st.caption(f"Near ATH filter: {near}% means stocks trading from the old ATH down to approximately {near}% below it are included, provided the minimum ATH gap condition is met.")
         if st.button(f"Run 26M ATH Scan on {min(batch,len(universe))} stocks",type="primary",use_container_width=True):
             scan_u=universe.head(int(batch)).copy();tickers=scan_u["Ticker"].tolist();rows=[];prog=st.progress(0,text="Downloading historical prices…")
             try:raw26=dl(tickers,period="max",interval="1d",adjust=False)
@@ -411,13 +231,11 @@ with tabs[2]:
             prog.empty();st.session_state["scan26"]=pd.DataFrame(rows)
         s26=st.session_state.get("scan26",pd.DataFrame())
         if not s26.empty:
-            confirmed=s26[s26["Confirmed"]==True].copy();near_df=s26[(s26["Confirmed"]==False)&(s26["Breakout %"]>=-near)&(s26["Months Gap"]>=gap)].copy();a1,a2,a3=st.columns(3);a1.metric("Scanned",len(s26));a2.metric("Confirmed 26M ATH",len(confirmed));a3.metric(f"Near ATH <= {near}%",len(near_df));show=pd.concat([confirmed.sort_values("Breakout %",ascending=False),near_df.sort_values("Breakout %",ascending=False)]).drop_duplicates("Symbol");st.dataframe(show,use_container_width=True,hide_index=True)
+            confirmed=s26[s26["Confirmed"]==True].copy();near_df=s26[(s26["Confirmed"]==False)&(s26["Breakout %"]>=-near)&(s26["Months Gap"]>=gap)].copy();a1,a2,a3=st.columns(3);a1.metric("Scanned",len(s26));a2.metric("Confirmed 26M ATH",len(confirmed));a3.metric(f"Near ATH ≤ {near}%",len(near_df));show=pd.concat([confirmed.sort_values("Breakout %",ascending=False),near_df.sort_values("Breakout %",ascending=False)]).drop_duplicates("Symbol");st.dataframe(show,use_container_width=True,hide_index=True)
         else:st.info("Run the scanner to generate results.")
 with tabs[3]:
     st.subheader("Weekly Sector Rotation / Leadership")
-    st.caption("Data priority: Upstox → NSE Indices → Yahoo backup. LEADER = 13W (3M) RS > 0 और 26W (6M) RS > 0 बनाम NIFTY 50. Status केवल completed Friday close पर update होता है.")
+    st.caption("LEADER = 13W (3M) RS > 0 और 26W (6M) RS > 0 बनाम NIFTY 50. Status completed Friday close पर update होता है.")
     sector_table=weekly_sector_scores().round(2)
-    if not _secret("UPSTOX_ACCESS_TOKEN"):
-        st.info("Reliable broker feed ready है। इसे activate करने के लिए Streamlit Secrets में UPSTOX_ACCESS_TOKEN जोड़ें; तब सभी supported NIFTY sector indices Upstox से आएँगे.")
     st.dataframe(sector_table,use_container_width=True,hide_index=True)
 with tabs[4]:st.info("Fundamental quality remains part of the long-term/positional workflow.")
