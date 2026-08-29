@@ -74,6 +74,25 @@ VALUE_MIGRATION_MAP = [
     (["chemical","industrial gas","fertilizer"], 82, "Green Hydrogen / Chemicals"),
 ]
 
+VALUE_MIGRATION_BASKETS = {
+    "Power Grid, Transformers & Transmission": ["POWERGRID.NS","ABB.NS","SIEMENS.NS","CGPOWER.NS","APARINDS.NS","HITACHIENER.NS","GEVERNOVA.NS","KEC.NS","KPIL.NS","POLYCAB.NS"],
+    "AI Data Centre Infrastructure": ["NETWEB.NS","ANANTRAJ.NS","ABB.NS","SIEMENS.NS","CUMMINSIND.NS","BLUESTARCO.NS","VOLTAS.NS","POLYCAB.NS","KEI.NS","TECHM.NS"],
+    "Battery Energy Storage (BESS) & Power Electronics": ["TATAPOWER.NS","JSWENERGY.NS","EXIDEIND.NS","AMARAJABAT.NS","WAAREEENER.NS","ABB.NS","SIEMENS.NS","CGPOWER.NS"],
+    "Electronics Components / EMS / Semiconductor Ecosystem": ["DIXON.NS","KAYNES.NS","SYRMA.NS","AMBER.NS","PGEL.NS","BEL.NS","NETWEB.NS","MOSCHIP.NS"],
+    "Defence Indigenisation & Component Suppliers": ["HAL.NS","BEL.NS","BDL.NS","MAZDOCK.NS","COCHINSHIP.NS","GRSE.NS","DATAPATTNS.NS","PARAS.NS"],
+    "Grain / Flexible-feed Ethanol": ["BALRAMCHIN.NS","TRIVENI.NS","GLOBUSSPR.NS","RENUKA.NS","EIDPARRY.NS","BAJAJHIND.NS"],
+}
+
+VALUE_MIGRATION_ROLES = {
+    "AI Data Centre Infrastructure": {
+        "NETWEB.NS":"AI servers, HPC & storage", "ANANTRAJ.NS":"Data-centre operator/developer",
+        "ABB.NS":"Electrical distribution & automation", "SIEMENS.NS":"Electrification & automation",
+        "CUMMINSIND.NS":"Backup power systems", "BLUESTARCO.NS":"Precision cooling & HVAC",
+        "VOLTAS.NS":"Cooling & HVAC", "POLYCAB.NS":"Power and data cables",
+        "KEI.NS":"Power cables", "TECHM.NS":"Cloud & digital services (indirect)",
+    }
+}
+
 
 def safe_float(v):
     try:
@@ -398,7 +417,9 @@ def build_final(scan, leader_df, macro_score, pfactors):
     d["Sector Rank"]=d["Industry"].map(rmap)
     d["Macro Support"]=macro_score*10
     vm=d["Industry"].apply(value_migration_score)
-    d["Value Migration Score"]=vm.apply(lambda x:x[0]); d["Value Migration Theme"]=vm.apply(lambda x:x[1])
+    fallback_score=vm.apply(lambda x:x[0]); fallback_theme=vm.apply(lambda x:x[1])
+    d["Value Migration Score"]=pd.to_numeric(d.get("Selected VM Score", fallback_score),errors="coerce").fillna(fallback_score)
+    d["Value Migration Theme"]=d.get("Selected VM Theme", fallback_theme).replace("",np.nan).fillna(fallback_theme)
     d["P Factor Score"]=d["Symbol"].map({k:v.get("P Factor Score",np.nan) for k,v in pfactors.items()})
     def score_row(r):
         comps=[(r["B Factor Score"],.30),(r["Leader Score"],.20),(r["Macro Support"],.10),(r["Value Migration Score"],.15)]
@@ -476,11 +497,30 @@ with tabs[0]:
     except Exception as exc:
         st.error(str(exc)); universe=pd.DataFrame()
     if not universe.empty:
+        source_options=["NIFTY 500","Value Migration Theme Stocks"]
+        source_index=1 if st.session_state.get("value_universe_source")=="Value Migration Theme Stocks" else 0
+        source=st.radio("Analysis universe",source_options,index=source_index,horizontal=True,key="value_universe_source")
+        selected_vm_theme=""
+        selected_vm_score=np.nan
+        if source=="Value Migration Theme Stocks":
+            themes=list(VALUE_MIGRATION_BASKETS)
+            preferred=st.session_state.get("vm_selected_theme",themes[0])
+            idx=themes.index(preferred) if preferred in themes else 0
+            selected_vm_theme=st.selectbox("Value Migration theme",themes,index=idx,key="value_engine_vm_theme")
+            st.session_state["vm_selected_theme"]=selected_vm_theme
+            selected_vm_score=safe_float(st.session_state.get("vm_selected_score",np.nan))
+            tickerset=set(VALUE_MIGRATION_BASKETS[selected_vm_theme])
+            u=universe[universe["Ticker"].isin(tickerset)].copy()
+            roles=VALUE_MIGRATION_ROLES.get(selected_vm_theme,{})
+            u["Theme Role"]=u["Ticker"].map(roles).fillna("Theme beneficiary")
+            st.success(f"{selected_vm_theme}: {len(u)} NIFTY 500 stocks linked for VALUE analysis.")
+        else:
+            u=universe.copy()
         c1,c2,c3=st.columns(3)
-        batch=c1.selectbox("Universe size",[50,100,200,500],index=1,key="value_batch")
+        batch=c1.selectbox("Universe size",[10,25,50,100,200,500],index=3,key="value_batch")
         period=c2.selectbox("Price history",["5y","10y","max"],index=1,key="value_period")
-        industry_sel=c3.multiselect("Industry filter",sorted(universe["Industry"].dropna().unique()),key="value_ind")
-        u=universe[universe["Industry"].isin(industry_sel)] if industry_sel else universe
+        industry_sel=c3.multiselect("Industry filter",sorted(u["Industry"].dropna().unique()),key="value_ind")
+        u=u[u["Industry"].isin(industry_sel)] if industry_sel else u
         u=u.head(int(batch)).copy()
         if st.button(f"💎 Run VALUE price scan on {len(u)} stocks",type="primary",use_container_width=True):
             tickers=u["Ticker"].tolist()
@@ -493,6 +533,8 @@ with tabs[0]:
                 d=extract_one(raw,r["Ticker"],len(tickers)); weeklies[r["Ticker"]]=d
                 typ,bscore,reason=classify_b_factor(d)
                 rec.append({"Symbol":r["Symbol"],"Company":r["Company Name"],"Industry":r["Industry"],
+                            "Theme Role":r.get("Theme Role",""),"Selected VM Theme":selected_vm_theme,
+                            "Selected VM Score":selected_vm_score,
                             "B Factor":typ,"B Factor Score":bscore,"B Reason":reason})
                 prog.progress((i+1)/max(1,len(u)),text=f"Scanning {i+1}/{len(u)}: {r['Symbol']}")
             prog.empty()
@@ -535,9 +577,10 @@ with tabs[0]:
             st.rerun()
 
         ranking=build_final(scan,leaders,macro_score,pfactors)
-        showcols=["Symbol","Company","Industry","VALUE Status","VALUE Score","B Factor","B Factor Score",
+        showcols=["Symbol","Company","Industry","Theme Role","VALUE Status","VALUE Score","B Factor","B Factor Score",
                   "P Factor Score","Leader Score","Sector Rank","Macro Support","Value Migration Theme",
                   "Value Migration Score","Coverage","B Reason"]
+        showcols=[c for c in showcols if c in ranking.columns]
         st.dataframe(ranking[showcols].head(100),use_container_width=True,hide_index=True,
             column_config={
                 "VALUE Score":st.column_config.ProgressColumn(min_value=0,max_value=100,format="%.0f"),
