@@ -66,6 +66,46 @@ VALUE_MIGRATION_BASKETS = {
     ],
 }
 
+VALUE_MIGRATION_ROLES = {
+    "Power Grid, Transformers & Transmission": {
+        "POWERGRID.NS": "Power transmission utility", "ABB.NS": "Grid automation & switchgear",
+        "SIEMENS.NS": "Electrification & grid automation", "CGPOWER.NS": "Transformers & switchgear",
+        "APARINDS.NS": "Conductors & power cables", "HITACHIENER.NS": "Grid equipment & transformers",
+        "GEVERNOVA.NS": "Power transmission equipment", "KEC.NS": "Transmission EPC",
+        "KPIL.NS": "Transmission EPC", "POLYCAB.NS": "Power cables",
+    },
+    "AI Data Centre Infrastructure": {
+        "NETWEB.NS": "AI servers, HPC & storage", "ANANTRAJ.NS": "Data-centre operator/developer",
+        "ABB.NS": "Electrical distribution & automation", "SIEMENS.NS": "Electrification & automation",
+        "CUMMINSIND.NS": "Backup power systems", "BLUESTARCO.NS": "Precision cooling & HVAC",
+        "VOLTAS.NS": "Cooling & HVAC", "POLYCAB.NS": "Power and data cables",
+        "KEI.NS": "Power cables", "TECHM.NS": "Cloud & digital services (indirect)",
+    },
+    "Battery Energy Storage (BESS) & Power Electronics": {
+        "TATAPOWER.NS": "Renewable power & storage", "JSWENERGY.NS": "Utility-scale energy storage",
+        "EXIDEIND.NS": "Battery cells & packs", "AMARAJABAT.NS": "Battery cells & energy storage",
+        "WAAREEENER.NS": "Solar modules & storage integration", "ABB.NS": "Power conversion & automation",
+        "SIEMENS.NS": "Grid integration & power electronics", "CGPOWER.NS": "Electrical equipment",
+    },
+    "Electronics Components / EMS / Semiconductor Ecosystem": {
+        "DIXON.NS": "Electronics manufacturing services", "KAYNES.NS": "EMS & semiconductor packaging",
+        "SYRMA.NS": "Electronics manufacturing services", "AMBER.NS": "Electronics & components",
+        "PGEL.NS": "Electronics manufacturing services", "BEL.NS": "Defence electronics",
+        "NETWEB.NS": "Computing systems manufacturing", "MOSCHIP.NS": "Semiconductor design",
+    },
+    "Defence Indigenisation & Component Suppliers": {
+        "HAL.NS": "Military aircraft & aerospace", "BEL.NS": "Defence electronics & radar",
+        "BDL.NS": "Missile systems", "MAZDOCK.NS": "Warships & submarines",
+        "COCHINSHIP.NS": "Naval shipbuilding", "GRSE.NS": "Warships & naval vessels",
+        "DATAPATTNS.NS": "Defence electronics", "PARAS.NS": "Defence engineering & optics",
+    },
+    "Grain / Flexible-feed Ethanol": {
+        "BALRAMCHIN.NS": "Sugar & ethanol producer", "TRIVENI.NS": "Sugar & multi-feed ethanol",
+        "GLOBUSSPR.NS": "Grain-based ethanol", "RENUKA.NS": "Sugar & ethanol producer",
+        "EIDPARRY.NS": "Sugar & distillery", "BAJAJHIND.NS": "Sugar & ethanol producer",
+    },
+}
+
 def _vm_policy_rows():
     """Transparent policy evidence. Scores are anchored to quantified official targets/capex."""
     return [
@@ -353,6 +393,7 @@ def render_value_migration_page():
         theme_tickers = set(VALUE_MIGRATION_BASKETS.get(selected_theme, []))
         cand = uni[uni["Ticker"].isin(theme_tickers)].copy()
         cand = cand.rename(columns={"Company Name":"Company"})
+        cand["Theme Role"] = cand["Ticker"].map(VALUE_MIGRATION_ROLES.get(selected_theme, {})).fillna("Theme beneficiary")
         st.metric("Theme-linked NIFTY 500 universe", len(cand))
 
         latest_ranked = st.session_state.get("latest_ranked", pd.DataFrame())
@@ -372,7 +413,7 @@ def render_value_migration_page():
             st.success("Latest main-dashboard scan is linked to this Value Migration page.")
             st.dataframe(joined, use_container_width=True, hide_index=True)
         else:
-            st.dataframe(cand[["Symbol","Company","Industry"]], use_container_width=True, hide_index=True)
+            st.dataframe(cand[["Symbol","Company","Industry","Theme Role"]], use_container_width=True, hide_index=True)
             st.info("Run the Main Dashboard scan once; then return here to merge 26M breakout + fundamentals into the migration ranking.")
     except Exception as e:
         st.warning(f"Candidate universe unavailable right now: {e}")
