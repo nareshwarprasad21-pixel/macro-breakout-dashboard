@@ -1114,13 +1114,17 @@ def render_value_migration_page():
     c4.metric("Live Data TTL", "30 min")
 
     st.markdown("### 1️⃣ Real-Data Value Migration Ranking")
+    st.caption("किसी भी Theme की row पर click करें; नीचे के सभी sections और stock table उसी theme के अनुसार update होंगे।")
     display = vm[[
         "Rank","Theme","Stage","Policy / Capex","5-6Y Runway",
         "Live Market Score","Median 6M %","6M Positive Breadth %",
         "Value Migration Score","Key Risk"
     ]].copy()
-    st.dataframe(
+    ranking_event = st.dataframe(
         display, use_container_width=True, hide_index=True,
+        key="vm_theme_ranking",
+        on_select="rerun",
+        selection_mode="single-row",
         column_config={
             "Policy / Capex": st.column_config.ProgressColumn(min_value=0,max_value=10,format="%.1f"),
             "5-6Y Runway": st.column_config.ProgressColumn(min_value=0,max_value=10,format="%.1f"),
@@ -1129,6 +1133,14 @@ def render_value_migration_page():
             "Value Migration Score": st.column_config.ProgressColumn(min_value=0,max_value=100,format="%.0f"),
         }
     )
+
+    theme_options = vm["Theme"].tolist()
+    if "vm_selected_theme" not in st.session_state or st.session_state["vm_selected_theme"] not in theme_options:
+        st.session_state["vm_selected_theme"] = theme_options[0]
+    selected_rows = ranking_event.selection.rows
+    if selected_rows:
+        st.session_state["vm_selected_theme"] = str(display.iloc[selected_rows[0]]["Theme"])
+    selected_theme = st.session_state["vm_selected_theme"]
 
     fig = go.Figure(go.Bar(
         x=vm["Value Migration Score"], y=vm["Theme"], orientation="h",
@@ -1142,7 +1154,7 @@ def render_value_migration_page():
     st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("### 2️⃣ Migration Chain + Live Confirmation")
-    selected_theme = st.selectbox("Choose Value Migration theme", vm["Theme"].tolist())
+    st.info(f"**Selected Theme:** {selected_theme}")
     r = vm[vm["Theme"]==selected_theme].iloc[0]
 
     a,b,c,d = st.columns(4)
@@ -1182,7 +1194,8 @@ def render_value_migration_page():
     st.caption("Candidate classification is then linked to your latest 26M breakout/fundamental scan.")
     try:
         uni = load_nifty500()
-        cand = uni[uni["Industry"].apply(lambda x: _theme_industry_match(selected_theme, x))].copy()
+        theme_tickers = set(VALUE_MIGRATION_BASKETS.get(selected_theme, []))
+        cand = uni[uni["Ticker"].isin(theme_tickers)].copy()
         cand = cand.rename(columns={"Company Name":"Company"})
         st.metric("Theme-linked NIFTY 500 universe", len(cand))
 
