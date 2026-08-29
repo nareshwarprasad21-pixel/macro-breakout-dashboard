@@ -352,6 +352,7 @@ def render_value_migration_page():
     st.markdown("### 2️⃣ Migration Chain + Live Confirmation")
     st.info(f"**Selected Theme:** {selected_theme}")
     r = vm[vm["Theme"]==selected_theme].iloc[0]
+    st.session_state["vm_selected_score"] = float(r["Value Migration Score"])
 
     a,b,c,d = st.columns(4)
     a.metric("Policy / Capex", f"{r['Policy / Capex']:.1f}/10")
@@ -394,6 +395,7 @@ def render_value_migration_page():
         cand = uni[uni["Ticker"].isin(theme_tickers)].copy()
         cand = cand.rename(columns={"Company Name":"Company"})
         cand["Theme Role"] = cand["Ticker"].map(VALUE_MIGRATION_ROLES.get(selected_theme, {})).fillna("Theme beneficiary")
+        st.session_state["vm_selected_symbols"] = cand["Symbol"].tolist()
         st.metric("Theme-linked NIFTY 500 universe", len(cand))
 
         latest_ranked = st.session_state.get("latest_ranked", pd.DataFrame())
@@ -415,6 +417,9 @@ def render_value_migration_page():
         else:
             st.dataframe(cand[["Symbol","Company","Industry","Theme Role"]], use_container_width=True, hide_index=True)
             st.info("Run the Main Dashboard scan once; then return here to merge 26M breakout + fundamentals into the migration ranking.")
+        if st.button("💎 Analyze this theme in VALUE Stock Engine", type="primary", use_container_width=True):
+            st.session_state["value_universe_source"] = "Value Migration Theme Stocks"
+            st.switch_page("pages/4_VALUE_Stock_Engine.py")
     except Exception as e:
         st.warning(f"Candidate universe unavailable right now: {e}")
 
