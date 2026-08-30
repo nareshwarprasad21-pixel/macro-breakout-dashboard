@@ -41,6 +41,35 @@ BENCHMARK = "^NSEI"
 DEFENCE_TICKER = "NIFTY_IND_DEFENCE.NS"
 DEFENCE_NSE_NAME = "NIFTY IND DEFENCE"
 
+def load_official_yahoo_defence(years):
+    """Read the official index ticker through Yahoo's raw chart endpoint."""
+    end = pd.Timestamp.now(tz="UTC")
+    start = end - pd.DateOffset(years=max(2, years + 1))
+    response = requests.get(
+        "https://query1.finance.yahoo.com/v8/finance/chart/NIFTY_IND_DEFENCE.NS",
+        params={
+            "period1": int(start.timestamp()),
+            "period2": int(end.timestamp()),
+            "interval": "1d",
+            "events": "history",
+        },
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=20,
+    )
+    response.raise_for_status()
+    result = response.json().get("chart", {}).get("result") or []
+    if not result:
+        return pd.Series(dtype=float, name=DEFENCE_TICKER)
+    item = result[0]
+    timestamps = item.get("timestamp") or []
+    quotes = (item.get("indicators", {}).get("quote") or [{}])[0]
+    closes = quotes.get("close") or []
+    if not timestamps or len(timestamps) != len(closes):
+        return pd.Series(dtype=float, name=DEFENCE_TICKER)
+    dates = pd.to_datetime(timestamps, unit="s", utc=True).tz_convert(None).normalize()
+    series = pd.Series(pd.to_numeric(closes, errors="coerce"), index=dates, name=DEFENCE_TICKER)
+    return series.dropna().sort_index().loc[lambda x: ~x.index.duplicated(keep="last")]
+
 def load_official_nse_defence(years):
     """Fetch official NIFTY India Defence daily closes from NSE India."""
     headers = {
@@ -145,15 +174,23 @@ def load_weekly(years):
     # The official Yahoo quote exists but its history is often empty. Use the
     # official NSE index-history endpoint—not an ETF—when that happens.
     if DEFENCE_TICKER not in close.columns or close[DEFENCE_TICKER].dropna().empty:
+        defence = pd.Series(dtype=float, name=DEFENCE_TICKER)
+        # First use Yahoo's raw chart endpoint for the same official index.
         try:
-            defence = load_official_nse_defence(years)
-            if not defence.empty:
-                if DEFENCE_TICKER in close.columns:
-                    close[DEFENCE_TICKER] = defence.reindex(close.index)
-                else:
-                    close = close.join(defence, how="outer")
+            defence = load_official_yahoo_defence(years)
         except Exception:
             pass
+        # NSE remains the official-source fallback when its server allows access.
+        if defence.empty:
+            try:
+                defence = load_official_nse_defence(years)
+            except Exception:
+                pass
+        if not defence.empty:
+            if DEFENCE_TICKER in close.columns:
+                close[DEFENCE_TICKER] = defence.reindex(close.index)
+            else:
+                close = close.join(defence, how="outer")
 
     close.index = pd.to_datetime(close.index).tz_localize(None)
     close = close.dropna(how="all").resample("W-FRI").last().dropna(how="all")
