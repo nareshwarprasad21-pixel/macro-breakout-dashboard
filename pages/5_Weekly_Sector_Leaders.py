@@ -215,7 +215,7 @@ def load_weekly(years):
 
     close.index = pd.to_datetime(close.index).tz_localize(None)
     close = close.dropna(how="all").resample("W-FRI").last().dropna(how="all")
-    return close.tail(max(30, int(years * 53) + 4))
+    return close.tail(max(55, int(years * 53) + 4))
 
 def rebase(s):
     s = s.dropna()
@@ -289,15 +289,18 @@ imp=scores.sort_values("Acceleration",ascending=False).iloc[0]
 m4.metric("Improving Fastest",imp["Sector"])
 
 fig=go.Figure()
-chart_items=[("NIFTY 50",BENCHMARK)]+[(name,SECTORS[name]) for name in selected if SECTORS[name] in close]
-valid_starts=[close[ticker].dropna().index.min() for _,ticker in chart_items if ticker in close and not close[ticker].dropna().empty]
-common_start=max(valid_starts) if valid_starts else close.index.min()
+# Keep at least 52 weeks loaded for RS scores, but show only the selected visual history.
+chart_weeks=max(26,int(years*53))
+chart_close=close.tail(chart_weeks+1)
+chart_items=[("NIFTY 50",BENCHMARK)]+[(name,SECTORS[name]) for name in selected if SECTORS[name] in chart_close]
+valid_starts=[chart_close[ticker].dropna().index.min() for _,ticker in chart_items if ticker in chart_close and not chart_close[ticker].dropna().empty]
+common_start=max(valid_starts) if valid_starts else chart_close.index.min()
 colors=["#FFFFFF","#22D3EE","#22C55E","#F59E0B","#3B82F6","#A855F7","#EF4444","#EC4899","#14B8A6","#F97316"]
 
 for i,(name,ticker) in enumerate(chart_items):
-    if ticker not in close:
+    if ticker not in chart_close:
         continue
-    s=close.loc[common_start:,ticker].dropna()
+    s=chart_close.loc[common_start:,ticker].dropna()
     if len(s)<2:
         continue
     pct=(s/s.iloc[0]-1.0)*100.0
@@ -327,7 +330,7 @@ fig.update_layout(
     paper_bgcolor="rgba(0,0,0,0)",plot_bgcolor="rgba(0,0,0,0)",
 )
 if valid_starts:
-    st.caption(f"Chart comparison period: {common_start:%d %b %Y} to {close.index.max():%d %b %Y} · All lines start at 0%.")
+    st.caption(f"Chart comparison period: {common_start:%d %b %Y} to {chart_close.index.max():%d %b %Y} · All lines start at 0%.")
 st.plotly_chart(fig,use_container_width=True,config={"displaylogo":False,"responsive":True})
 
 st.info("How to read: every line starts at 0% on the same date. A sector ending above NIFTY 50 has outperformed over the selected period. The 4W/13W/26W/52W RS calculations below remain independent of the visual chart scale. This is a ranking heuristic, not an investment recommendation.")
