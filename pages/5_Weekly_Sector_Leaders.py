@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+import requests
 import streamlit as st
 import yfinance as yf
 
@@ -37,6 +38,57 @@ SECTORS = {
     "NIFTY India Manufacturing": "NIFTY_INDIA_MFG.NS",
 }
 BENCHMARK = "^NSEI"
+DEFENCE_TICKER = "NIFTY_IND_DEFENCE.NS"
+DEFENCE_NSE_NAME = "NIFTY IND DEFENCE"
+
+def load_official_nse_defence(years):
+    """Fetch official NIFTY India Defence daily closes from NSE India."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136 Safari/537.36",
+        "Accept": "application/json,text/plain,*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.nseindia.com/reports-indices-historical-index-data",
+    }
+    session = requests.Session()
+    session.get("https://www.nseindia.com/", headers=headers, timeout=15)
+
+    end = pd.Timestamp.today().normalize()
+    start = end - pd.DateOffset(years=max(2, years + 1))
+    records = []
+    cursor = start
+
+    # NSE's historical endpoint is most reliable with roughly one-year chunks.
+    while cursor <= end:
+        chunk_end = min(cursor + pd.DateOffset(years=1) - pd.Timedelta(days=1), end)
+        response = session.get(
+            "https://www.nseindia.com/api/historical/indicesHistory",
+            params={
+                "indexType": DEFENCE_NSE_NAME,
+                "from": cursor.strftime("%d-%m-%Y"),
+                "to": chunk_end.strftime("%d-%m-%Y"),
+            },
+            headers=headers,
+            timeout=20,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        records.extend(payload.get("data", {}).get("indexCloseOnlineRecords", []))
+        cursor = chunk_end + pd.Timedelta(days=1)
+
+    if not records:
+        return pd.Series(dtype=float, name=DEFENCE_TICKER)
+
+    frame = pd.DataFrame(records)
+    if "EOD_TIMESTAMP" not in frame or "EOD_CLOSE_INDEX_VAL" not in frame:
+        return pd.Series(dtype=float, name=DEFENCE_TICKER)
+
+    dates = pd.to_datetime(frame["EOD_TIMESTAMP"], errors="coerce", dayfirst=True)
+    values = pd.to_numeric(
+        frame["EOD_CLOSE_INDEX_VAL"].astype(str).str.replace(",", "", regex=False),
+        errors="coerce",
+    )
+    series = pd.Series(values.to_numpy(), index=dates, name=DEFENCE_TICKER)
+    return series[~series.index.isna()].dropna().sort_index().loc[lambda x: ~x.index.duplicated(keep="last")]
 
 @st.cache_data(ttl=1200, show_spinner=False)
 def load_weekly(years):
@@ -89,6 +141,19 @@ def load_weekly(years):
                 close = close.join(one_close, how="outer")
         except Exception:
             continue
+
+    # The official Yahoo quote exists but its history is often empty. Use the
+    # official NSE index-history endpoint—not an ETF—when that happens.
+    if DEFENCE_TICKER not in close.columns or close[DEFENCE_TICKER].dropna().empty:
+        try:
+            defence = load_official_nse_defence(years)
+            if not defence.empty:
+                if DEFENCE_TICKER in close.columns:
+                    close[DEFENCE_TICKER] = defence.reindex(close.index)
+                else:
+                    close = close.join(defence, how="outer")
+        except Exception:
+            pass
 
     close.index = pd.to_datetime(close.index).tz_localize(None)
     close = close.dropna(how="all").resample("W-FRI").last().dropna(how="all")
