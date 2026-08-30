@@ -7,7 +7,7 @@ import yfinance as yf
 st.set_page_config(page_title="Weekly Sector Leaders", page_icon="📈", layout="wide")
 
 st.title("📈 Weekly Sector Leaders vs NIFTY 50")
-st.caption("Weekly relative-performance view. Every line is rebased to 100 at the selected starting point so sectors with different index levels can be compared fairly against NIFTY 50.")
+st.caption("Weekly relative-performance view. Every line is rebased to 100 at the selected starting point so sectors with different index levels can be compared fairly against NIFTY 50. Defence uses MODEFENCE ETF as a live proxy because Yahoo does not provide reliable history for the official Defence index ticker.")
 
 SECTORS = {
     # Core sectoral indices
@@ -32,7 +32,7 @@ SECTORS = {
     "NIFTY Energy": "^CNXENERGY",
     "NIFTY Infrastructure": "^CNXINFRA",
     "NIFTY Services Sector": "^CNXSERVICE",
-    "NIFTY India Defence": "NIFTY_IND_DEFENCE.NS",
+    "NIFTY India Defence (ETF Proxy)": "MODEFENCE.NS",
     "NIFTY India Digital": "NIFTY_IND_DIGITAL.NS",
     "NIFTY India Manufacturing": "NIFTY_INDIA_MFG.NS",
 }
