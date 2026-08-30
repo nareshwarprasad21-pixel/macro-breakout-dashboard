@@ -8,7 +8,7 @@ import yfinance as yf
 st.set_page_config(page_title="Weekly Sector Leaders", page_icon="📈", layout="wide")
 
 st.title("📈 Weekly Sector Leaders vs NIFTY 50")
-st.caption("Weekly relative-performance view. Every line is rebased to 100 at the selected starting point so sectors with different index levels can be compared fairly against NIFTY 50.")
+st.caption("Weekly relative-performance view. Every line is rebased to 100 at the selected starting point. NIFTY Defence Basket is a free equal-weight basket of current Defence constituents, not the official licensed index.")
 
 SECTORS = {
     # Core sectoral indices
@@ -33,13 +33,44 @@ SECTORS = {
     "NIFTY Energy": "^CNXENERGY",
     "NIFTY Infrastructure": "^CNXINFRA",
     "NIFTY Services Sector": "^CNXSERVICE",
-    "NIFTY India Defence": "NIFTY_IND_DEFENCE.NS",
+    "NIFTY Defence Basket": "DEFENCE_BASKET",
     "NIFTY India Digital": "NIFTY_IND_DIGITAL.NS",
     "NIFTY India Manufacturing": "NIFTY_INDIA_MFG.NS",
 }
 BENCHMARK = "^NSEI"
-DEFENCE_TICKER = "NIFTY_IND_DEFENCE.NS"
-DEFENCE_NSE_NAME = "NIFTY IND DEFENCE"
+DEFENCE_TICKER = "DEFENCE_BASKET"
+DEFENCE_CONSTITUENTS = [
+    "HAL.NS", "BEL.NS", "SOLARINDS.NS", "BHARATFORG.NS", "MAZDOCK.NS",
+    "BDL.NS", "COCHINSHIP.NS", "GRSE.NS", "DATAPATTNS.NS", "MTARTECH.NS",
+    "BEML.NS", "ASTRAMICRO.NS", "PARAS.NS", "ZENTEC.NS", "DCXINDIA.NS",
+    "DYNAMATECH.NS", "MIDHANI.NS", "IDEAFORGE.NS", "CYIENTDLM.NS",
+]
+
+def load_defence_basket(period):
+    """Build a free equal-weight Defence basket from current constituents."""
+    raw = yf.download(
+        DEFENCE_CONSTITUENTS,
+        period=period,
+        interval="1d",
+        auto_adjust=True,
+        progress=False,
+        group_by="column",
+        threads=True,
+    )
+    if raw.empty:
+        return pd.Series(dtype=float, name=DEFENCE_TICKER)
+    prices = raw["Close"] if isinstance(raw.columns, pd.MultiIndex) else raw[["Close"]]
+    prices = prices.dropna(how="all")
+    returns = prices.pct_change(fill_method=None)
+    # Require at least half the basket to have a price on a date.
+    minimum = max(3, len(DEFENCE_CONSTITUENTS) // 2)
+    basket_returns = returns.mean(axis=1, skipna=True).where(returns.notna().sum(axis=1) >= minimum)
+    first_valid = basket_returns.first_valid_index()
+    if first_valid is None:
+        return pd.Series(dtype=float, name=DEFENCE_TICKER)
+    basket = (1.0 + basket_returns.loc[first_valid:].fillna(0.0)).cumprod() * 100.0
+    basket.name = DEFENCE_TICKER
+    return basket
 
 def load_official_yahoo_defence(years):
     """Read the official index ticker through Yahoo's raw chart endpoint."""
@@ -127,7 +158,7 @@ def load_weekly(years):
     indices (notably NIFTY India Defence). Daily data is more complete and the
     local resample keeps every sector on the same weekly calendar.
     """
-    tickers = [BENCHMARK] + list(SECTORS.values())
+    tickers = [BENCHMARK] + [ticker for ticker in SECTORS.values() if ticker != DEFENCE_TICKER]
     period = {1:"2y", 2:"3y", 3:"5y", 5:"10y"}.get(years, "5y")
     raw = yf.download(
         tickers,
@@ -173,24 +204,14 @@ def load_weekly(years):
 
     # The official Yahoo quote exists but its history is often empty. Use the
     # official NSE index-history endpoint—not an ETF—when that happens.
-    if DEFENCE_TICKER not in close.columns or close[DEFENCE_TICKER].dropna().empty:
-        defence = pd.Series(dtype=float, name=DEFENCE_TICKER)
-        # First use Yahoo's raw chart endpoint for the same official index.
-        try:
-            defence = load_official_yahoo_defence(years)
-        except Exception:
-            pass
-        # NSE remains the official-source fallback when its server allows access.
-        if defence.empty:
-            try:
-                defence = load_official_nse_defence(years)
-            except Exception:
-                pass
+    # Free, transparent Defence proxy: equal-weight return basket of current
+    # constituent stocks. This enables line chart and 4W/13W/26W/52W RS.
+    try:
+        defence = load_defence_basket(period)
         if not defence.empty:
-            if DEFENCE_TICKER in close.columns:
-                close[DEFENCE_TICKER] = defence.reindex(close.index)
-            else:
-                close = close.join(defence, how="outer")
+            close = close.join(defence, how="outer")
+    except Exception:
+        pass
 
     close.index = pd.to_datetime(close.index).tz_localize(None)
     close = close.dropna(how="all").resample("W-FRI").last().dropna(how="all")
