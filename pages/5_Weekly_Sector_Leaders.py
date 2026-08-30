@@ -8,7 +8,7 @@ import yfinance as yf
 st.set_page_config(page_title="Weekly Sector Leaders", page_icon="📈", layout="wide")
 
 st.title("📈 Weekly Sector Leaders vs NIFTY 50")
-st.caption("Weekly relative-performance view. Every line is rebased to 100 at the selected starting point. NIFTY Defence Basket is a free equal-weight basket of current Defence constituents, not the official licensed index.")
+st.caption("TradingView-style weekly percentage comparison. Every line starts at 0% on the same visible starting date. NIFTY Defence Basket is a free equal-weight basket of current Defence constituents, not the official licensed index.")
 
 SECTORS = {
     # Core sectoral indices
@@ -159,7 +159,7 @@ def load_weekly(years):
     local resample keeps every sector on the same weekly calendar.
     """
     tickers = [BENCHMARK] + [ticker for ticker in SECTORS.values() if ticker != DEFENCE_TICKER]
-    period = {1:"2y", 2:"3y", 3:"5y", 5:"10y"}.get(years, "5y")
+    period = {0.5:"1y", 1:"2y", 2:"3y", 3:"5y", 5:"10y"}.get(years, "5y")
     raw = yf.download(
         tickers,
         period=period,
@@ -215,7 +215,7 @@ def load_weekly(years):
 
     close.index = pd.to_datetime(close.index).tz_localize(None)
     close = close.dropna(how="all").resample("W-FRI").last().dropna(how="all")
-    return close.tail(max(55, years * 53 + 4))
+    return close.tail(max(30, int(years * 53) + 4))
 
 def rebase(s):
     s = s.dropna()
@@ -257,7 +257,7 @@ def build_scores(close):
 
 c1,c2,c3=st.columns([1,1,2])
 with c1:
-    years=st.selectbox("Weekly history",[1,2,3,5],index=2,format_func=lambda x:f"{x} year" if x==1 else f"{x} years")
+    years=st.selectbox("Weekly history",[0.5,1,2,3,5],index=1,format_func=lambda x:"6 months" if x==0.5 else (f"{int(x)} year" if x==1 else f"{int(x)} years"))
 with c2:
     max_lines=st.slider("Sector lines", 3, len(SECTORS), 6, help="Choose how many sector lines may be shown together.")
 
@@ -289,21 +289,48 @@ imp=scores.sort_values("Acceleration",ascending=False).iloc[0]
 m4.metric("Improving Fastest",imp["Sector"])
 
 fig=go.Figure()
-b=rebase(close[BENCHMARK])
-# NIFTY 50 is the permanent benchmark: bright white and thicker so it stays visible on the dark dashboard.
-fig.add_trace(go.Scatter(x=b.index,y=b,name="NIFTY 50",mode="lines",line={"width":4,"color":"#FFFFFF"},hovertemplate="NIFTY 50<br>%{x|%d %b %Y}<br>Rebased: %{y:.1f}<extra></extra>"))
-for name in selected:
-    ticker=SECTORS[name]
+chart_items=[("NIFTY 50",BENCHMARK)]+[(name,SECTORS[name]) for name in selected if SECTORS[name] in close]
+valid_starts=[close[ticker].dropna().index.min() for _,ticker in chart_items if ticker in close and not close[ticker].dropna().empty]
+common_start=max(valid_starts) if valid_starts else close.index.min()
+colors=["#FFFFFF","#22D3EE","#22C55E","#F59E0B","#3B82F6","#A855F7","#EF4444","#EC4899","#14B8A6","#F97316"]
+
+for i,(name,ticker) in enumerate(chart_items):
     if ticker not in close:
         continue
-    s=rebase(close[ticker])
-    status=scores.loc[scores["Sector"]==name,"Status"].iloc[0]
-    fig.add_trace(go.Scatter(x=s.index,y=s,name=f"{name} · {status}",mode="lines",line={"width":2.5},hovertemplate=f"<b>{name}</b><br>%{{x|%d %b %Y}}<br>Rebased: %{{y:.1f}}<extra></extra>"))
-fig.add_hline(y=100,line_dash="dot",line_color="rgba(100,100,100,.45)")
-fig.update_layout(height=650,hovermode="x unified",legend={"orientation":"h","y":1.12,"x":0},margin=dict(l=15,r=15,t=65,b=15),xaxis_title="Weekly timeframe",yaxis_title="Performance rebased to 100",paper_bgcolor="rgba(0,0,0,0)",plot_bgcolor="rgba(0,0,0,0)")
+    s=close.loc[common_start:,ticker].dropna()
+    if len(s)<2:
+        continue
+    pct=(s/s.iloc[0]-1.0)*100.0
+    color=colors[i%len(colors)]
+    width=3.5 if ticker==BENCHMARK else 2.5
+    current=pct.iloc[-1]
+    label=f"{name}  {current:+.1f}%"
+    fig.add_trace(go.Scatter(
+        x=pct.index,y=pct,name=name,mode="lines",
+        line={"width":width,"color":color},
+        hovertemplate=f"<b>{name}</b><br>%{{x|%d %b %Y}}<br>Change: %{{y:+.2f}}%<extra></extra>",
+    ))
+    fig.add_annotation(
+        x=pct.index[-1],y=current,text=label,showarrow=False,
+        xanchor="left",xshift=8,font={"size":11,"color":color},
+        bgcolor="rgba(6,16,24,.86)",bordercolor=color,borderwidth=1,borderpad=3,
+    )
+
+fig.add_hline(y=0,line_dash="dot",line_color="rgba(180,190,200,.55)",line_width=1)
+fig.update_layout(
+    height=650,hovermode="x unified",
+    legend={"orientation":"h","y":1.12,"x":0},
+    margin=dict(l=15,r=175,t=65,b=15),
+    xaxis_title="Weekly timeframe · last available close",
+    yaxis_title="Change from common start (%)",
+    yaxis={"ticksuffix":"%","zeroline":False},
+    paper_bgcolor="rgba(0,0,0,0)",plot_bgcolor="rgba(0,0,0,0)",
+)
+if valid_starts:
+    st.caption(f"Chart comparison period: {common_start:%d %b %Y} to {close.index.max():%d %b %Y} · All lines start at 0%.")
 st.plotly_chart(fig,use_container_width=True,config={"displaylogo":False,"responsive":True})
 
-st.info("How to read: a sector line rising faster than NIFTY 50 is outperforming. LEADER means sustained positive relative strength; IMPROVING means recent relative strength is accelerating and may be moving toward leadership. This is a ranking heuristic, not an investment recommendation.")
+st.info("How to read: every line starts at 0% on the same date. A sector ending above NIFTY 50 has outperformed over the selected period. The 4W/13W/26W/52W RS calculations below remain independent of the visual chart scale. This is a ranking heuristic, not an investment recommendation.")
 
 show=scores[["Sector","Status","4W RS","13W RS","26W RS","52W RS","Acceleration","RS Score"]].copy()
 for col in ["4W RS","13W RS","26W RS","52W RS","Acceleration","RS Score"]:
