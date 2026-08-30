@@ -7,7 +7,7 @@ import yfinance as yf
 st.set_page_config(page_title="Weekly Sector Leaders", page_icon="📈", layout="wide")
 
 st.title("📈 Weekly Sector Leaders vs NIFTY 50")
-st.caption("Weekly relative-performance view. Every line is rebased to 100 at the selected starting point so sectors with different index levels can be compared fairly against NIFTY 50. Defence uses MODEFENCE ETF as a live proxy because Yahoo does not provide reliable history for the official Defence index ticker.")
+st.caption("Weekly relative-performance view. Every line is rebased to 100 at the selected starting point so sectors with different index levels can be compared fairly against NIFTY 50.")
 
 SECTORS = {
     # Core sectoral indices
@@ -32,7 +32,7 @@ SECTORS = {
     "NIFTY Energy": "^CNXENERGY",
     "NIFTY Infrastructure": "^CNXINFRA",
     "NIFTY Services Sector": "^CNXSERVICE",
-    "NIFTY India Defence (ETF Proxy)": "MODEFENCE.NS",
+    "NIFTY India Defence": "NIFTY_IND_DEFENCE.NS",
     "NIFTY India Digital": "NIFTY_IND_DIGITAL.NS",
     "NIFTY India Manufacturing": "NIFTY_INDIA_MFG.NS",
 }
@@ -60,6 +60,36 @@ def load_weekly(years):
     if raw.empty:
         return pd.DataFrame()
     close = raw["Close"] if isinstance(raw.columns, pd.MultiIndex) else raw[["Close"]].rename(columns={"Close": BENCHMARK})
+
+    # yfinance can omit a valid NSE index from a large multi-ticker request.
+    # Retry every missing ticker individually so official indices such as
+    # NIFTY India Defence remain official index data (no ETF proxy).
+    missing = [ticker for ticker in tickers if ticker not in close.columns or close[ticker].dropna().empty]
+    for ticker in missing:
+        try:
+            one = yf.download(
+                ticker,
+                period=period,
+                interval="1d",
+                auto_adjust=True,
+                progress=False,
+                threads=False,
+            )
+            if one.empty:
+                continue
+            if isinstance(one.columns, pd.MultiIndex):
+                one_close = one["Close"]
+                one_close = one_close.iloc[:, 0] if isinstance(one_close, pd.DataFrame) else one_close
+            else:
+                one_close = one["Close"]
+            one_close.name = ticker
+            if ticker in close.columns:
+                close[ticker] = one_close
+            else:
+                close = close.join(one_close, how="outer")
+        except Exception:
+            continue
+
     close.index = pd.to_datetime(close.index).tz_localize(None)
     close = close.dropna(how="all").resample("W-FRI").last().dropna(how="all")
     return close.tail(max(55, years * 53 + 4))
