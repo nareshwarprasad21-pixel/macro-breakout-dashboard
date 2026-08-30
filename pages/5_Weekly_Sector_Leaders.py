@@ -40,13 +40,28 @@ BENCHMARK = "^NSEI"
 
 @st.cache_data(ttl=1200, show_spinner=False)
 def load_weekly(years):
+    """Download daily prices first, then build Friday weekly closes.
+
+    Yahoo does not consistently return interval="1wk" history for newer Indian
+    indices (notably NIFTY India Defence). Daily data is more complete and the
+    local resample keeps every sector on the same weekly calendar.
+    """
     tickers = [BENCHMARK] + list(SECTORS.values())
     period = {1:"2y", 2:"3y", 3:"5y", 5:"10y"}.get(years, "5y")
-    raw = yf.download(tickers, period=period, interval="1wk", auto_adjust=True, progress=False, group_by="column", threads=True)
+    raw = yf.download(
+        tickers,
+        period=period,
+        interval="1d",
+        auto_adjust=True,
+        progress=False,
+        group_by="column",
+        threads=True,
+    )
     if raw.empty:
         return pd.DataFrame()
     close = raw["Close"] if isinstance(raw.columns, pd.MultiIndex) else raw[["Close"]].rename(columns={"Close": BENCHMARK})
-    close = close.dropna(how="all")
+    close.index = pd.to_datetime(close.index).tz_localize(None)
+    close = close.dropna(how="all").resample("W-FRI").last().dropna(how="all")
     return close.tail(max(55, years * 53 + 4))
 
 def rebase(s):
