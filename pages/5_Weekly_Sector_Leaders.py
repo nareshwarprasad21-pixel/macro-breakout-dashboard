@@ -10,21 +10,31 @@ st.title("📈 Weekly Sector Leaders vs NIFTY 50")
 st.caption("Weekly relative-performance view. Every line is rebased to 100 at the selected starting point so sectors with different index levels can be compared fairly against NIFTY 50.")
 
 SECTORS = {
+    # Core sectoral indices
     "NIFTY Auto": "^CNXAUTO",
     "NIFTY Bank": "^NSEBANK",
+    "NIFTY Consumer Durables": "NIFTY_CONSR_DURBL.NS",
     "NIFTY Financial Services": "NIFTY_FIN_SERVICE.NS",
     "NIFTY FMCG": "^CNXFMCG",
+    "NIFTY Healthcare": "NIFTY_HEALTHCARE.NS",
     "NIFTY IT": "^CNXIT",
     "NIFTY Media": "^CNXMEDIA",
     "NIFTY Metal": "^CNXMETAL",
+    "NIFTY Oil & Gas": "NIFTY_OIL_AND_GAS.NS",
     "NIFTY Pharma": "^CNXPHARMA",
+    "NIFTY Private Bank": "NIFTY_PVT_BANK.NS",
     "NIFTY PSU Bank": "^CNXPSUBANK",
     "NIFTY Realty": "^CNXREALTY",
-    "NIFTY Energy": "^CNXENERGY",
-    "NIFTY Infrastructure": "^CNXINFRA",
+
+    # Broad sector / economy and high-priority thematic indices
     "NIFTY Commodities": "^CNXCMDT",
     "NIFTY Consumption": "^CNXCONSUM",
+    "NIFTY Energy": "^CNXENERGY",
+    "NIFTY Infrastructure": "^CNXINFRA",
     "NIFTY Services Sector": "^CNXSERVICE",
+    "NIFTY India Defence": "NIFTY_IND_DEFENCE.NS",
+    "NIFTY India Digital": "NIFTY_IND_DIGITAL.NS",
+    "NIFTY India Manufacturing": "NIFTY_INDIA_MFG.NS",
 }
 BENCHMARK = "^NSEI"
 
@@ -81,7 +91,7 @@ c1,c2,c3=st.columns([1,1,2])
 with c1:
     years=st.selectbox("Weekly history",[1,2,3,5],index=2,format_func=lambda x:f"{x} year" if x==1 else f"{x} years")
 with c2:
-    max_lines=st.slider("Sector lines",3,10,6)
+    max_lines=st.slider("Sector lines", 3, len(SECTORS), 6, help="Choose how many sector lines may be shown together.")
 
 try:
     close=load_weekly(years)
@@ -101,7 +111,7 @@ if not defaults:
     defaults=scores.head(max_lines)["Sector"].tolist()
 
 with c3:
-    selected=st.multiselect("Compare sectors against NIFTY 50",scores["Sector"].tolist(),default=defaults,max_selections=10)
+    selected=st.multiselect("Compare sectors against NIFTY 50",scores["Sector"].tolist(),default=defaults,max_selections=len(SECTORS))
 
 m1,m2,m3,m4=st.columns(4)
 m1.metric("Benchmark","NIFTY 50")
