@@ -1,3 +1,4 @@
+# Deployment refresh: expanded Weekly Sector Leaders to 22 indices (2026-08-30)
 import io
 import time
 from datetime import date
