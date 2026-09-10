@@ -21,7 +21,8 @@ st.markdown(
         .dashboard-icon {font-size:2.2rem; margin-bottom:.4rem;}
         .dashboard-title {font-size:1.3rem; font-weight:750; margin-bottom:.4rem;}
         .dashboard-desc {color:#777; min-height:52px; margin-bottom:.8rem;}
-        div[data-testid="stLinkButton"] > a {width:100%; justify-content:center; border-radius:10px; font-weight:650;}
+        .open-btn {display:block; width:100%; box-sizing:border-box; text-align:center; text-decoration:none !important; padding:.62rem .85rem; border:1px solid rgba(128,128,128,.45); border-radius:10px; font-weight:650; color:inherit !important; background:transparent;}
+        .open-btn:hover {border-color:rgba(128,128,128,.8); background:rgba(128,128,128,.08);}
         @media (max-width: 700px) {.hub-title{font-size:1.8rem;} .dashboard-card{min-height:auto;}}
     </style>
     """,
@@ -35,15 +36,15 @@ c1, c2, c3 = st.columns(3, gap="large")
 
 with c1:
     st.markdown('''<div class="dashboard-card"><div class="dashboard-icon">🔧</div><div class="dashboard-title">Maintenance Dashboard</div><div class="dashboard-desc">PM, breakdown, machine history, check sheets aur maintenance records.</div></div>''', unsafe_allow_html=True)
-    st.link_button("Open Maintenance", MAINTENANCE_URL, use_container_width=True)
+    st.markdown(f'<a class="open-btn" href="{MAINTENANCE_URL}" target="_self">Open Maintenance</a>', unsafe_allow_html=True)
 
 with c2:
     st.markdown('''<div class="dashboard-card"><div class="dashboard-icon">🌿</div><div class="dashboard-title">Naturopathy Dashboard</div><div class="dashboard-desc">Natural health knowledge, topics, notes aur searchable learning records.</div></div>''', unsafe_allow_html=True)
-    st.link_button("Open Naturopathy", NATUROPATHY_URL, use_container_width=True)
+    st.markdown(f'<a class="open-btn" href="{NATUROPATHY_URL}" target="_self">Open Naturopathy</a>', unsafe_allow_html=True)
 
 with c3:
     st.markdown('''<div class="dashboard-card"><div class="dashboard-icon">📈</div><div class="dashboard-title">Investment Dashboard</div><div class="dashboard-desc">Macro, sector rotation, value migration, breakouts aur stock research.</div></div>''', unsafe_allow_html=True)
-    st.link_button("Open Investment", INVESTMENT_URL, use_container_width=True)
+    st.markdown(f'<a class="open-btn" href="{INVESTMENT_URL}" target="_self">Open Investment</a>', unsafe_allow_html=True)
 
 st.divider()
-st.caption("Tip: Is Master Dashboard ko mobile Home Screen par add kar den, phir isi ek icon se tino dashboards open honge.")
+st.caption("Mobile stability fix: dashboards isi browser window me open honge, extra Streamlit/WebView session create nahi hoga.")
