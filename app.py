@@ -13,6 +13,7 @@ from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 import yfinance as yf
 from graham import fetch_graham_data
+from acac_scanner import render_acac_page
 from policy_stock_map import render_policy_stock_mapping
 from ui_polish import apply_professional_ui
 
@@ -1404,6 +1405,14 @@ with st.sidebar:
         st.session_state["app_page"] = "graham"
         st.rerun()
 
+    if st.button(
+        "🎯 ACAC Weekly Scanner",
+        use_container_width=True,
+        type="primary" if st.session_state["app_page"] == "acac" else "secondary",
+    ):
+        st.session_state["app_page"] = "acac"
+        st.rerun()
+
     st.divider()
 
 if st.session_state["app_page"] == "value_migration":
@@ -1412,6 +1421,10 @@ if st.session_state["app_page"] == "value_migration":
 
 if st.session_state["app_page"] == "graham":
     render_graham_page()
+    st.stop()
+
+if st.session_state["app_page"] == "acac":
+    render_acac_page(load_nifty500, download_prices, extract_one)
     st.stop()
 
 st.title(APP_TITLE)
