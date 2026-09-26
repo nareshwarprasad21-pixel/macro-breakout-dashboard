@@ -101,6 +101,112 @@ def extract_one(raw, ticker, n_tickers):
     except Exception:
         return pd.DataFrame()
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def market_breadth_history(tickers):
+    """Daily NIFTY 500 breadth: % of valid stocks above their 50/200-day SMA."""
+    tickers = tuple(tickers)
+    if not tickers:
+        return pd.DataFrame()
+    raw = download_prices(list(tickers) + ["^NSEI"], period="2y")
+    above_50, valid_50, above_200, valid_200 = [], [], [], []
+    for ticker in tickers:
+        d = extract_one(raw, ticker, len(tickers) + 1)
+        if d.empty:
+            continue
+        close = pd.to_numeric(d["Close"], errors="coerce")
+        if isinstance(close, pd.DataFrame):
+            close = close.iloc[:, 0]
+        close.index = pd.to_datetime(close.index).tz_localize(None)
+        sma50 = close.rolling(50, min_periods=50).mean()
+        sma200 = close.rolling(200, min_periods=200).mean()
+        above_50.append((close > sma50).rename(ticker))
+        valid_50.append(sma50.notna().rename(ticker))
+        above_200.append((close > sma200).rename(ticker))
+        valid_200.append(sma200.notna().rename(ticker))
+    if not above_50:
+        return pd.DataFrame()
+    a50, v50 = pd.concat(above_50, axis=1), pd.concat(valid_50, axis=1)
+    a200, v200 = pd.concat(above_200, axis=1), pd.concat(valid_200, axis=1)
+    breadth = pd.DataFrame(index=a50.index.union(a200.index).sort_values())
+    breadth["Above 50-SMA %"] = a50.where(v50).mean(axis=1) * 100
+    breadth["Above 200-SMA %"] = a200.where(v200).mean(axis=1) * 100
+    breadth["Stocks 50"] = v50.sum(axis=1)
+    breadth["Stocks 200"] = v200.sum(axis=1)
+    nifty = extract_one(raw, "^NSEI", len(tickers) + 1)
+    if not nifty.empty:
+        nclose = pd.to_numeric(nifty["Close"], errors="coerce")
+        if isinstance(nclose, pd.DataFrame):
+            nclose = nclose.iloc[:, 0]
+        nclose.index = pd.to_datetime(nclose.index).tz_localize(None)
+        breadth["NIFTY 50"] = nclose.reindex(breadth.index).ffill()
+    return breadth.dropna(subset=["Above 50-SMA %", "Above 200-SMA %"], how="all")
+
+def breadth_signal(value_50, value_200):
+    if value_50 >= 50 and value_200 >= 50:
+        return "🟢 CONFIRMED BULLISH", "Medium- और long-term breadth दोनों मजबूत हैं. Swing trades के लिए supportive market."
+    if value_50 >= 50 and value_200 < 50:
+        return "🔵 RECOVERY / EARLY BULLISH", "Short/medium-term momentum bullish है, लेकिन long-term confirmation अभी बाकी है."
+    if value_50 < 50 and value_200 >= 50:
+        return "🟠 CORRECTION IN LONG-TERM UPTREND", "Long-term structure bullish है, पर medium-term market correction/weakness में है."
+    return "🔴 DEFENSIVE / BEARISH", "अधिकांश stocks 50-SMA और 200-SMA के नीचे हैं. Aggressive buying से बचें."
+
+def render_market_breadth(universe):
+    st.subheader("📊 NIFTY 50 vs NSE Market Breadth")
+    st.caption(
+        "NSE breadth proxy: current NIFTY 500 constituents. Red = अपने 50-day SMA के ऊपर stocks; "
+        "Black = अपने 200-day SMA के ऊपर stocks; dotted line = 50% decision level."
+    )
+    try:
+        with st.spinner("NIFTY 500 market breadth calculate हो रही है…"):
+            breadth = market_breadth_history(tuple(universe["Ticker"].dropna().tolist()))
+    except Exception as exc:
+        st.warning(f"Market breadth data अभी load नहीं हुआ: {exc}")
+        return
+    valid = breadth.dropna(subset=["Above 50-SMA %", "Above 200-SMA %"])
+    if valid.empty:
+        st.warning("Market breadth calculate करने के लिए पर्याप्त price data उपलब्ध नहीं है.")
+        return
+    latest = valid.iloc[-1]
+    prior = valid.iloc[-2] if len(valid) > 1 else latest
+    p50, p200 = float(latest["Above 50-SMA %"]), float(latest["Above 200-SMA %"])
+    status, explanation = breadth_signal(p50, p200)
+    c1, c2, c3 = st.columns([1, 1, 1.35])
+    c1.metric("🔴 Above 50-SMA", f"{p50:.1f}%", f"{p50-float(prior['Above 50-SMA %']):+.1f} pp")
+    c2.metric("⚫ Above 200-SMA", f"{p200:.1f}%", f"{p200-float(prior['Above 200-SMA %']):+.1f} pp")
+    c3.metric("Market Breadth Signal", status)
+    st.info(f"**आज का आसान अर्थ:** {explanation}")
+    chart = breadth.tail(320).copy()
+    fig = go.Figure()
+    if "NIFTY 50" in chart.columns:
+        fig.add_trace(go.Scatter(x=chart.index, y=chart["NIFTY 50"], name="NIFTY 50",
+                                 line=dict(color="#1f77b4", width=2), yaxis="y2", opacity=0.65))
+    fig.add_trace(go.Scatter(x=chart.index, y=chart["Above 50-SMA %"], name="% Stocks Above 50-SMA",
+                             line=dict(color="#e53935", width=2.5)))
+    fig.add_trace(go.Scatter(x=chart.index, y=chart["Above 200-SMA %"], name="% Stocks Above 200-SMA",
+                             line=dict(color="#111111", width=2.5)))
+    fig.add_hline(y=50, line_dash="dot", line_color="#7f8c8d", line_width=2,
+                  annotation_text="50% Bull/Bear Line", annotation_position="top left")
+    fig.update_layout(
+        height=520, hovermode="x unified", margin=dict(l=10, r=10, t=35, b=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        yaxis=dict(title="NSE stocks above SMA (%)", range=[0, 100], ticksuffix="%"),
+        yaxis2=dict(title="NIFTY 50", overlaying="y", side="right", showgrid=False), xaxis=dict(title="Date"))
+    st.plotly_chart(fig, use_container_width=True)
+    st.markdown("#### 50% line को कैसे पढ़ें")
+    guide = pd.DataFrame([
+        ["50-SMA > 50%", "Medium-term Bullish", "आधे से ज्यादा stocks 50-DMA के ऊपर"],
+        ["50-SMA < 50%", "Medium-term Weak", "Swing momentum कमजोर"],
+        ["200-SMA > 50%", "Long-term Bullish", "Broad market का primary trend मजबूत"],
+        ["200-SMA < 50%", "Long-term Weak", "Long-term participation कमजोर"],
+        ["दोनों > 50%", "Confirmed Bullish", "Swing trading का सबसे supportive regime"],
+        ["दोनों < 50%", "Defensive", "Position size कम और strict stop-loss"],
+    ], columns=["Condition", "Indication", "Simple Meaning"])
+    st.dataframe(guide, use_container_width=True, hide_index=True)
+    st.caption(
+        f"Latest breadth date: {latest.name:%d %b %Y} | Valid stocks: "
+        f"50-SMA {int(latest['Stocks 50'])}, 200-SMA {int(latest['Stocks 200'])}. "
+        "Current constituents create survivorship bias; use this as market context, not a standalone buy/sell signal.")
+
 def to_monthly(df):
     if df.empty:
         return df
@@ -1512,6 +1618,10 @@ except Exception as e:
     st.stop()
 
 industry_options = sorted(universe["Industry"].dropna().unique().tolist())
+
+with st.expander("📊 NIFTY 50 vs NSE % Stocks Above 50/200-SMA", expanded=False):
+    render_market_breadth(universe)
+
 selected_industries = st.multiselect("Industry filter (optional)", industry_options)
 uf = universe[universe["Industry"].isin(selected_industries)] if selected_industries else universe.copy()
 uf = uf.head(int(batch_size))
