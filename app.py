@@ -184,7 +184,7 @@ def render_market_breadth(universe):
     fig.add_trace(go.Scatter(x=chart.index, y=chart["Above 50-SMA %"], name="% Stocks Above 50-SMA",
                              line=dict(color="#e53935", width=2.5)))
     fig.add_trace(go.Scatter(x=chart.index, y=chart["Above 200-SMA %"], name="% Stocks Above 200-SMA",
-                             line=dict(color="#111111", width=2.5)))
+                             line=dict(color="#00E5FF", width=3, dash="solid")))
     fig.add_hline(y=50, line_dash="dot", line_color="#7f8c8d", line_width=2,
                   annotation_text="50% Bull/Bear Line", annotation_position="top left")
     fig.update_layout(
