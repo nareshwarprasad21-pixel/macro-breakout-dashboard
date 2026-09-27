@@ -193,6 +193,10 @@ def macro_support():
         rows.append({'Driver':name,'Latest':last,'1M %':r1,'3M %':r3,'As Of':pd.to_datetime(c.index[-1]).strftime('%Y-%m-%d')})
     df=pd.DataFrame(rows)
     score,regime,coverage,attribution,stale,newest=score_macro(df)
+    # Keep the shared scorer's per-driver contribution fields with the source
+    # data; the Macro Support table sorts by Contribution for explainability.
+    if not df.empty and not attribution.empty:
+        df=df.merge(attribution[["Driver","Contribution","Weight","Available"]],on="Driver",how="left")
     return (score/10 if pd.notna(score) else np.nan),regime,coverage,df
 
 def ath_breakout_signal(d, lookback_min_weeks=104):
