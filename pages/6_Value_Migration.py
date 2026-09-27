@@ -251,15 +251,12 @@ def value_migration_themes():
     live = live_value_migration_market_signals()
     df = df.merge(live, on="Theme", how="left")
 
-    # Live score carries 30% of the final result; if unavailable, use neutral 5/10.
-    live_component = df["Live Market Score"].fillna(5.0)
-    df["Value Migration Score"] = (
-        0.25*df["Policy / Capex"] +
-        0.20*df["5-6Y Runway"] +
-        0.15*df["Bottleneck Intensity"] +
-        0.10*df["Early-stage Score"] +
-        0.30*live_component
-    ) * 10
+    # Missing live data removes its weight; it never contributes a neutral score.
+    score_inputs = df[["Policy / Capex", "5-6Y Runway", "Bottleneck Intensity", "Early-stage Score", "Live Market Score"]]
+    score_weights = pd.Series([.25, .20, .15, .10, .30], index=score_inputs.columns)
+    used_weight = score_inputs.notna().mul(score_weights).sum(axis=1)
+    df["Score Coverage %"] = (used_weight / score_weights.sum() * 100).round().astype(int)
+    df["Value Migration Score"] = (score_inputs.mul(score_weights).sum(axis=1, min_count=1) / used_weight * 100)
 
     df["Rank"] = df["Value Migration Score"].rank(method="first", ascending=False).astype(int)
     return df.sort_values("Value Migration Score", ascending=False).reset_index(drop=True)
@@ -312,7 +309,7 @@ def render_value_migration_page():
     st.markdown("### 1️⃣ Real-Data Value Migration Ranking")
     st.caption("किसी भी Theme की row पर click करें; नीचे के सभी sections और stock table उसी theme के अनुसार update होंगे।")
     display = vm[[
-        "Rank","Theme","Stage","Policy / Capex","5-6Y Runway",
+        "Rank","Theme","Stage","Policy / Capex","5-6Y Runway","Score Coverage %",
         "Live Market Score","Median 6M %","6M Positive Breadth %",
         "Value Migration Score","Key Risk"
     ]].copy()

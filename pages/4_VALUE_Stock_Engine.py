@@ -9,6 +9,7 @@ import streamlit as st
 import yfinance as yf
 
 from graham import fetch_graham_data
+from macro_common import score_macro
 
 st.set_page_config(page_title="VALUE Stock Engine", page_icon="💎", layout="wide")
 
@@ -174,58 +175,25 @@ def value_migration_score(industry):
     for keys, score, theme in VALUE_MIGRATION_MAP:
         if any(k in text for k in keys):
             return score, theme
-    return 50, "Broad / Neutral"
+    return np.nan, "Needs reviewed theme mapping"
 
 
 @st.cache_data(ttl=1200, show_spinner=False)
 def macro_support():
-    tickers = list(MACRO_ASSETS.values())
-    try:
-        raw = download_prices(tickers, period="2y", interval="1d")
-    except Exception:
-        raw = pd.DataFrame()
-    specs = [
-        ("NIFTY 50", +1, 2.2, 8.0), ("India VIX", -1, 1.7, 15.0),
-        ("USD/INR", -1, 1.5, 4.0), ("Brent Crude", -1, 1.5, 12.0),
-        ("Dollar Index", -1, 1.0, 6.0), ("US 10Y Yield", -1, 1.0, 8.0),
-        ("Gold", -1, .6, 12.0),
-    ]
-    rows=[]; weighted=0.; weights=0.
-    for name, direction, weight, scale in specs:
-        d = extract_one(raw, MACRO_ASSETS[name], len(tickers))
-        if d.empty or "Close" not in d.columns:
-            continue
-        c = pd.to_numeric(d["Close"], errors="coerce").dropna()
-        if len(c)<65: continue
-        last=safe_float(c.iloc[-1])
-        r1=(last/safe_float(c.iloc[-22])-1)*100 if len(c)>22 else np.nan
-        r3=(last/safe_float(c.iloc[-64])-1)*100
-        impulse=.75*r3+.25*(r1 if pd.notna(r1) else r3)
-        sig=float(np.tanh(direction*impulse/scale))
-        weighted += sig*weight; weights += weight
-        rows.append({"Driver":name,"Latest":last,"1M %":r1,"3M %":r3,
-                     "Signal":"Supportive" if sig>.15 else "Adverse" if sig<-.15 else "Neutral",
-                     "Contribution":sig*weight,
-                     "As Of":pd.to_datetime(c.index[-1]).strftime("%Y-%m-%d")})
-    total=sum(s[2] for s in specs)
-    score=float(np.clip(5+5*weighted/weights,0,10)) if weights else 5.
-    coverage=int(round(100*weights/total)) if total else 0
+    tickers=list(MACRO_ASSETS.values())
+    try: raw=download_prices(tickers,period='2y',interval='1d')
+    except Exception: raw=pd.DataFrame()
+    rows=[]
+    for name,ticker in MACRO_ASSETS.items():
+        d=extract_one(raw,ticker,len(tickers))
+        if d.empty or 'Close' not in d: continue
+        c=pd.to_numeric(d['Close'],errors='coerce').dropna()
+        if len(c)<64: continue
+        last=safe_float(c.iloc[-1]); r1=(last/safe_float(c.iloc[-22])-1)*100; r3=(last/safe_float(c.iloc[-64])-1)*100
+        rows.append({'Driver':name,'Latest':last,'1M %':r1,'3M %':r3,'As Of':pd.to_datetime(c.index[-1]).strftime('%Y-%m-%d')})
     df=pd.DataFrame(rows)
-    def v(name, col="3M %"):
-        r=df[df["Driver"]==name] if not df.empty else pd.DataFrame()
-        return safe_float(r.iloc[0][col]) if not r.empty else np.nan
-    nifty=v("NIFTY 50"); crude=v("Brent Crude"); fx=v("USD/INR")
-    vixrow=df[df["Driver"]=="India VIX"] if not df.empty else pd.DataFrame()
-    vix=safe_float(vixrow.iloc[0]["Latest"]) if not vixrow.empty else np.nan
-    inflation=int(pd.notna(crude) and crude>10)+int(pd.notna(fx) and fx>3)
-    stress=int(pd.notna(nifty) and nifty<-5)+int(pd.notna(vix) and vix>20)
-    if score>=7.6 and (pd.isna(nifty) or nifty>0) and stress==0: regime="EARLY / RISK-ON"
-    elif score>=6.8 and stress==0: regime="MID CYCLE / EXPANSION"
-    elif inflation>=1 and score>=3.8: regime="LATE CYCLE / INFLATION-SENSITIVE"
-    elif score<3.8 or stress>=2: regime="RISK-OFF / CONTRACTION"
-    else: regime="MID-TO-LATE / MIXED"
-    return score, regime, coverage, df
-
+    score,regime,coverage,attribution,stale,newest=score_macro(df)
+    return (score/10 if pd.notna(score) else np.nan),regime,coverage,df
 
 def ath_breakout_signal(d, lookback_min_weeks=104):
     if d.empty or len(d)<lookback_min_weeks+4 or "High" not in d or "Close" not in d:
@@ -399,7 +367,7 @@ def sector_leadership(scan, weeklies):
         rs6=m6-bm6 if pd.notna(m6) and pd.notna(bm6) else np.nan
         rs12=m12-bm12 if pd.notna(m12) and pd.notna(bm12) else np.nan
         raw=np.nanmean([x for x in [rs6,rs12] if pd.notna(x)]) if any(pd.notna(x) for x in [rs6,rs12]) else np.nan
-        score=float(np.clip(50+50*np.tanh(raw/20),0,100)) if pd.notna(raw) else 50
+        score=float(np.clip(50+50*np.tanh(raw/20),0,100)) if pd.notna(raw) else np.nan
         rows.append({"Industry":ind,"6M Return %":m6,"12M Return %":m12,"6M RS vs NIFTY %":rs6,"12M RS vs NIFTY %":rs12,"Leader Score":score})
     sec=pd.DataFrame(rows).sort_values("Leader Score",ascending=False)
     if not sec.empty:
@@ -413,9 +381,9 @@ def build_final(scan, leader_df, macro_score, pfactors):
     d=scan.copy()
     lmap=leader_df.set_index("Industry")["Leader Score"].to_dict() if not leader_df.empty else {}
     rmap=leader_df.set_index("Industry")["Sector Rank"].to_dict() if not leader_df.empty else {}
-    d["Leader Score"]=d["Industry"].map(lmap).fillna(50)
+    d["Leader Score"]=d["Industry"].map(lmap)
     d["Sector Rank"]=d["Industry"].map(rmap)
-    d["Macro Support"]=macro_score*10
+    d["Macro Support"]=macro_score*10 if pd.notna(macro_score) else np.nan
     vm=d["Industry"].apply(value_migration_score)
     fallback_score=vm.apply(lambda x:x[0]); fallback_theme=vm.apply(lambda x:x[1])
     d["Value Migration Score"]=pd.to_numeric(d.get("Selected VM Score", fallback_score),errors="coerce").fillna(fallback_score)
@@ -424,9 +392,10 @@ def build_final(scan, leader_df, macro_score, pfactors):
     def score_row(r):
         comps=[(r["B Factor Score"],.30),(r["Leader Score"],.20),(r["Macro Support"],.10),(r["Value Migration Score"],.15)]
         if pd.notna(r["P Factor Score"]): comps.append((r["P Factor Score"],.25))
+        comps=[(value,weight) for value,weight in comps if pd.notna(value)]
         w=sum(w for _,w in comps); return sum(v*w for v,w in comps)/w if w else np.nan
     d["VALUE Score"]=d.apply(score_row,axis=1)
-    d["Coverage"]=np.where(d["P Factor Score"].notna(),"5/6 + Graham on-demand","4/6 + P/Graham pending")
+    d["Coverage"]=d.apply(lambda r:f"{sum(pd.notna(r[c]) for c in ['B Factor Score','Leader Score','Macro Support','Value Migration Score','P Factor Score'])}/5 model inputs available; Graham on-demand",axis=1)
     d["VALUE Status"]=np.where(d["VALUE Score"]>=80,"STRONG VALUE SETUP",np.where(d["VALUE Score"]>=65,"BUY-WATCH",np.where(d["VALUE Score"]>=50,"WATCH","LOW")))
     return d.sort_values(["VALUE Score","B Factor Score"],ascending=False)
 
@@ -455,9 +424,11 @@ st.title("💎 VALUE Stock Engine")
 st.caption("Your framework: Value Migration → Macro Support → P Factor → Leader → Graham Value → B Factor. Photo-derived B-Factor rules are implemented as transparent heuristics, not as guaranteed chart-pattern recognition.")
 
 macro_score, macro_regime, macro_cov, macro_df = macro_support()
+if pd.isna(macro_score):
+    st.warning(f"Macro score/regime withheld: coverage {macro_cov}% or a key input is stale/missing.")
 
 top1,top2,top3,top4=st.columns(4)
-top1.metric("Macro Support",f"{macro_score*10:.0f}/100")
+top1.metric("Macro Support",f"{macro_score*10:.0f}/100" if pd.notna(macro_score) else "N/A")
 text_metric(top2,"Macro Regime",macro_regime)
 top3.metric("Macro Coverage",f"{macro_cov}%")
 text_metric(top4,"Engine","6-Factor VALUE")
@@ -654,7 +625,7 @@ with tabs[3]:
 with tabs[4]:
     st.subheader("🌍 Macro Support")
     a,b,c=st.columns(3)
-    a.metric("Macro Support",f"{macro_score*10:.0f}/100")
+    a.metric("Macro Support",f"{macro_score*10:.0f}/100" if pd.notna(macro_score) else "N/A")
     text_metric(b,"Regime",macro_regime)
     c.metric("Coverage",f"{macro_cov}%")
     if not macro_df.empty:

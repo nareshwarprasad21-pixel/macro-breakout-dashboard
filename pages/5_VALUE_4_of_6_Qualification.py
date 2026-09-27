@@ -6,6 +6,7 @@ import streamlit as st
 import yfinance as yf
 
 from graham import fetch_graham_data
+from macro_common import score_macro
 
 st.set_page_config(page_title="VALUE 4-of-6 Qualification", page_icon="✅", layout="wide")
 
@@ -55,7 +56,7 @@ def value_migration_score(industry):
     for keys, score, theme in VALUE_MIGRATION_MAP:
         if any(k in text for k in keys):
             return score, theme
-    return 50, "Broad / Neutral"
+    return np.nan, "Needs reviewed theme mapping"
 
 
 def _close_series(raw, ticker, total):
@@ -77,32 +78,18 @@ def _close_series(raw, ticker, total):
 @st.cache_data(ttl=1200, show_spinner=False)
 def macro_support_score():
     tickers=list(MACRO_ASSETS.values())
-    try:
-        raw=yf.download(tickers=tickers,period="2y",interval="1d",group_by="ticker",auto_adjust=False,threads=True,progress=False,timeout=25)
-    except TypeError:
-        raw=yf.download(tickers=tickers,period="2y",interval="1d",group_by="ticker",auto_adjust=False,threads=True,progress=False)
-    except Exception:
-        raw=pd.DataFrame()
-    specs=[
-        ("NIFTY 50",+1,2.2,8.0),("India VIX",-1,1.7,15.0),("USD/INR",-1,1.5,4.0),
-        ("Brent Crude",-1,1.5,12.0),("Dollar Index",-1,1.0,6.0),("US 10Y Yield",-1,1.0,8.0),("Gold",-1,.6,12.0),
-    ]
-    weighted=weights=0.0
+    try: raw=yf.download(tickers=tickers,period='2y',interval='1d',group_by='ticker',auto_adjust=False,threads=True,progress=False,timeout=25)
+    except TypeError: raw=yf.download(tickers=tickers,period='2y',interval='1d',group_by='ticker',auto_adjust=False,threads=True,progress=False)
+    except Exception: raw=pd.DataFrame()
     rows=[]
-    for name,direction,weight,scale in specs:
-        c=_close_series(raw,MACRO_ASSETS[name],len(tickers))
-        if len(c)<65: continue
-        last=safe_float(c.iloc[-1])
-        r1=(last/safe_float(c.iloc[-22])-1)*100 if len(c)>22 else np.nan
-        r3=(last/safe_float(c.iloc[-64])-1)*100
-        impulse=.75*r3+.25*(r1 if pd.notna(r1) else r3)
-        sig=float(np.tanh(direction*impulse/scale))
-        weighted += sig*weight; weights += weight
-        rows.append({"Driver":name,"1M %":r1,"3M %":r3,"Contribution":sig*weight,"As Of":pd.to_datetime(c.index[-1]).strftime("%Y-%m-%d")})
-    score=float(np.clip(5+5*weighted/weights,0,10))*10 if weights else 50.0
-    coverage=int(round(100*weights/sum(s[2] for s in specs))) if specs else 0
-    return score, coverage, pd.DataFrame(rows)
-
+    for name,ticker in MACRO_ASSETS.items():
+        c=_close_series(raw,ticker,len(tickers))
+        if len(c)<64: continue
+        last=safe_float(c.iloc[-1]); r1=(last/safe_float(c.iloc[-22])-1)*100; r3=(last/safe_float(c.iloc[-64])-1)*100
+        rows.append({'Driver':name,'Latest':last,'1M %':r1,'3M %':r3,'As Of':pd.to_datetime(c.index[-1]).strftime('%Y-%m-%d')})
+    df=pd.DataFrame(rows)
+    score,regime,coverage,attribution,stale,newest=score_macro(df)
+    return score,coverage,df
 
 def graham_score(symbol):
     try:
@@ -142,8 +129,8 @@ graham_scores=dict(st.session_state.get("value_graham_scores",{}))
 
 m1,m2,m3,m4=st.columns(4)
 m1.metric("Qualification Rule","≥4 / 6")
-m2.metric("Macro Support",f"{macro_score:.0f}/100")
-m3.metric("Macro Pass","PASS" if macro_score>=60 else "FAIL")
+m2.metric("Macro Support",f"{macro_score:.0f}/100" if pd.notna(macro_score) else "N/A")
+m3.metric("Macro Pass","PENDING" if pd.isna(macro_score) or macro_cov<70 else "PASS" if macro_score>=60 else "FAIL")
 m4.metric("Macro Coverage",f"{macro_cov}%")
 
 with st.expander("How each master factor becomes PASS",expanded=True):
@@ -177,7 +164,7 @@ for _,r in scan.iterrows():
 
     passes={
         "Value Migration": vm_score>=70,
-        "Macro Support": macro_score>=60,
+        "Macro Support": pd.notna(macro_score) and macro_cov>=70 and macro_score>=60,
         "P Factor": bool(p_master),
         "Leader": pd.notna(leader) and leader>=65,
         "Graham Value": pd.notna(gs) and pd.notna(ga) and ga>=4 and gs>=60,
@@ -185,13 +172,15 @@ for _,r in scan.iterrows():
     }
     count=sum(bool(x) for x in passes.values())
     pending=[]
+    if pd.isna(macro_score) or macro_cov<70: pending.append("Macro Support")
+    if pd.isna(vm_score): pending.append("Value Migration mapping")
     if pd.isna(p_passed): pending.append("P Factor")
     if pd.isna(gs): pending.append("Graham")
     rows.append({
         "Symbol":sym,"Company":r.get("Company",""),"Industry":r.get("Industry",""),
         "VALUE Qualification":qualification_label(count),"Factors Passed":count,
-        "1 Value Migration":"PASS" if passes["Value Migration"] else "FAIL",
-        "2 Macro":"PASS" if passes["Macro Support"] else "FAIL",
+        "1 Value Migration":"PASS" if passes["Value Migration"] else "PENDING" if pd.isna(vm_score) else "FAIL",
+        "2 Macro":"PASS" if passes["Macro Support"] else "PENDING" if pd.isna(macro_score) or macro_cov<70 else "FAIL",
         "3 P Factor":"PASS" if passes["P Factor"] else "PENDING" if pd.isna(p_passed) else "FAIL",
         "4 Leader":"PASS" if passes["Leader"] else "FAIL",
         "5 Graham":"PASS" if passes["Graham Value"] else "PENDING" if pd.isna(gs) else "FAIL",

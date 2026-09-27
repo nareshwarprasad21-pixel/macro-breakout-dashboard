@@ -8,6 +8,7 @@ import pandas as pd
 import requests
 import streamlit as st
 import yfinance as yf
+from macro_common import completed_monthly_bars, score_macro
 
 st.set_page_config(page_title="Professional Research Lab", page_icon="🧠", layout="wide")
 
@@ -121,12 +122,12 @@ def load_nifty500():
 
 def monthly_26m_signal(d,min_gap=26):
     if d is None or d.empty or "High" not in d.columns or "Close" not in d.columns:return None
-    x=d.copy();x.index=pd.to_datetime(x.index).tz_localize(None);m=x.resample("ME").agg({"High":"max","Close":"last","Volume":"sum" if "Volume" in x.columns else "size"}).dropna(subset=["High","Close"])
+    x=d.copy();x.index=pd.to_datetime(x.index).tz_localize(None);m=x.resample("ME").agg({"High":"max","Close":"last","Volume":"sum" if "Volume" in x.columns else "size"}).dropna(subset=["High","Close"]); m=completed_monthly_bars(m)
     if len(m)<min_gap+2:return None
     highs=pd.to_numeric(m["High"],errors="coerce");closes=pd.to_numeric(m["Close"],errors="coerce");latest=m.index[-1];latest_close=sf(closes.iloc[-1]);prior=highs.iloc[:-1].dropna()
     if prior.empty:return None
     old_ath=sf(prior.max());ath_dates=prior.index[np.isclose(prior.values,old_ath,rtol=1e-10,atol=1e-10)];ath_date=ath_dates[-1] if len(ath_dates) else prior.idxmax();gap=(latest.year-ath_date.year)*12+(latest.month-ath_date.month);breakout=bool(pd.notna(latest_close) and latest_close>old_ath and gap>=min_gap);distance=(latest_close/old_ath-1)*100 if pd.notna(latest_close) and old_ath else np.nan
-    return {"Status":"26M ATH BREAKOUT" if breakout else "Near / No Breakout","Monthly Close":latest_close,"Old ATH":old_ath,"ATH Date":ath_date.strftime("%Y-%m-%d"),"Months Gap":gap,"Breakout %":distance,"As Of":latest.strftime("%Y-%m-%d"),"Confirmed":breakout}
+    return {"Status":"26M ATH BREAKOUT" if breakout else "Near / No Breakout","Monthly Close":latest_close,"Old ATH":old_ath,"ATH Date":ath_date.strftime("%Y-%m-%d"),"Months Gap":gap,"Breakout %":distance,"Months Since Signal":0 if breakout else np.nan,"As Of":latest.strftime("%Y-%m-%d"),"Confirmed":breakout}
 
 @st.cache_data(ttl=1200,show_spinner=False)
 def macro_snapshot():
@@ -138,17 +139,8 @@ def macro_snapshot():
     return pd.DataFrame(rows)
 
 def macro_score(df):
-    if df.empty:return 5.0
-    def val(name,col="3M %"):
-        r=df.loc[df["Indicator"]==name,col]
-        return sf(r.iloc[0]) if len(r) else np.nan
-    rules=[("NIFTY 50",1,2.0),("India VIX",-1,1.5),("USD/INR",-1,1.5),("Brent Crude",-1,1.5),("Dollar Index",-1,1.0),("US 10Y Yield",-1,1.0),("Gold",1,0.5)]
-    s=0.0;w=0.0
-    for name,direction,weight in rules:
-        x=val(name)
-        if pd.isna(x):continue
-        s+=np.tanh((direction*x)/5.0)*weight;w+=weight
-    return float(np.clip(5+5*(s/w),0,10)) if w else 5.0
+    score, regime, coverage, attribution, stale, newest = score_macro(df)
+    return (score / 10 if pd.notna(score) else np.nan), regime, coverage, stale, newest
 
 def _secret(name):
     try:return str(st.secrets.get(name,"")).strip()
@@ -192,8 +184,10 @@ def swing(symbol,mscore):
     c=pd.to_numeric(d["Close"],errors="coerce").dropna();nc=pd.to_numeric(n["Close"],errors="coerce").dropna();sc=pd.to_numeric(sec["Close"],errors="coerce").dropna() if not sec.empty else pd.Series(dtype=float);price=sf(c.iloc[-1]);n20=sf(nc.rolling(20).mean().iloc[-1]);n50=sf(nc.rolling(50).mean().iloc[-1]);np_=sf(nc.iloc[-1]);market=100*sum([np_>n20,np_>n50,ret(nc,20)>0])/3;sr4=ret(sc,20)-ret(nc,20) if len(sc)>21 else np.nan;sr13=ret(sc,65)-ret(nc,65) if len(sc)>66 else np.nan;sector_score=float(np.clip(50+8*(0 if pd.isna(sr4) else sr4)+4*(0 if pd.isna(sr13) else sr13),0,100));rsn=ret(c,20)-ret(nc,20);rss=ret(c,20)-ret(sc,20) if len(sc)>21 else np.nan;rs_score=float(np.clip(50+8*rsn+6*(0 if pd.isna(rss) else rss),0,100));setups,details,confirmed,rsmeta=evaluate_setups(d,nc,sc,sector_score);setup_score=100*len(confirmed)/7;macro_component=float(np.clip(mscore*10,0,100));technical_gate=len(confirmed)>0;weighted=market*.15+sector_score*.20+rs_score*.20+setup_score*.40+macro_component*.05;label="BUY SETUP FOUND" if technical_gate and weighted>=55 else "TECHNICAL SETUP FOUND — CHECK CONTEXT" if technical_gate else "NO APPROVED TECHNICAL SETUP / WAIT";ma20=sf(c.rolling(20).mean().iloc[-1]);low20=sf(pd.to_numeric(d["Low"],errors="coerce").iloc[-20:].min());atr=atr14(d);stops=[x for x in [ma20,low20,price-1.5*atr if pd.notna(atr) else np.nan] if pd.notna(x) and x<price];stop=max(stops) if stops else price*.96;risk=price-stop;target=price+2*risk
     return {"Ticker":ticker,"Price":price,"Sector":sname,"As Of":pd.to_datetime(c.index[-1]).strftime("%Y-%m-%d"),"Final":label,"Score":weighted,"Gate":technical_gate,"Setups":setups,"SetupDetails":details,"Confirmed":confirmed,"Market":market,"SectorScore":sector_score,"RSScore":rs_score,"RSN":rsn,"RSS":rss,"RSI":rsi14(c),"Entry":price,"SL":stop,"Target":target,"Trail":ma20,"RSmeta":rsmeta}
 
-macro=macro_snapshot();mscore=macro_score(macro);regime="SUPPORTIVE / RISK-ON" if mscore>=7.5 else "MIXED / SELECTIVE" if mscore>=5 else "CAUTIOUS" if mscore>=3 else "RISK-OFF"
-st.title("Professional Investment Research Lab");a,b,c=st.columns(3);a.metric("Macro Score",f"{mscore:.1f}/10");text_metric(b,"Macro Regime",regime);c.metric("Data Cache","20 min");tabs=st.tabs(["Long-Term / Positional","Swing Trading","26M ATH Scanner","Sector Rotation","Fundamentals"])
+macro=macro_snapshot();mscore,regime,macro_coverage,macro_stale,macro_asof=macro_score(macro)
+st.title("Professional Investment Research Lab");a,b,c=st.columns(3);a.metric("Macro Score",f"{mscore:.1f}/10" if pd.notna(mscore) else "N/A");text_metric(b,"Macro Regime",regime);c.metric("Macro Coverage",f"{macro_coverage}%");st.caption(f"Macro data as of {macro_asof:%Y-%m-%d}" if pd.notna(macro_asof) else "Macro score/regime withheld: no fresh data date.");
+if pd.isna(mscore) or macro_stale or macro_coverage < 70: st.warning("Macro score/regime withheld because a key feed is missing, one or more inputs are stale, or coverage is below 70%.")
+tabs=st.tabs(["Long-Term / Positional","Swing Trading","26M ATH Scanner","Sector Rotation","Fundamentals"])
 with tabs[0]:st.subheader("Macro Regime Diagnostics");st.info("Macro positional/long-term background filter है; direct BUY signal नहीं.");st.dataframe(macro,use_container_width=True,hide_index=True);st.markdown("**Decision:** Macro → Sector Leadership → 26M ATH → Fundamentals → Final Opportunity")
 with tabs[1]:
     st.subheader("Live Swing Trading Engine — Your Technical Setups #1 to #7");st.caption("BUY technical gate आपके approved setups पर आधारित है. कोई approved setup confirmed न हो तो BUY नहीं आएगा.");c1,c2=st.columns([2,1]);symbol=c1.text_input("NSE Symbol",value="NMDC").strip().upper();run=c2.button("Run Live Swing Analysis",type="primary",use_container_width=True)

@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import yfinance as yf
+from macro_common import score_macro
 
 st.set_page_config(page_title='Decision Engine', page_icon='🎯', layout='wide')
 
@@ -45,34 +46,28 @@ def macro_engine():
     ts=list(ASSETS.values())
     try: raw=yf.download(ts,period='2y',interval='1d',group_by='ticker',auto_adjust=False,threads=True,progress=False,timeout=25)
     except TypeError: raw=yf.download(ts,period='2y',interval='1d',group_by='ticker',auto_adjust=False,threads=True,progress=False)
-    except: raw=pd.DataFrame()
-    specs=[('NIFTY 50',1,2.2,8),('India VIX',-1,1.7,15),('USD/INR',-1,1.5,4),('Brent Crude',-1,1.5,12),('Dollar Index',-1,1,6),('US 10Y Yield',-1,1,8),('Gold',-1,.6,12)]
-    rows=[]; num=den=0
-    for n,d,w,s in specs:
-        c=close(raw,ASSETS[n],len(ts))
+    except Exception: raw=pd.DataFrame()
+    rows=[]
+    for name,ticker in ASSETS.items():
+        c=close(raw,ticker,len(ts))
         if len(c)<64: continue
-        r1=(c.iloc[-1]/c.iloc[-22]-1)*100; r3=(c.iloc[-1]/c.iloc[-64]-1)*100
-        sig=float(np.tanh(d*(.75*r3+.25*r1)/s)); num+=sig*w; den+=w
-        rows.append({'Driver':n,'Latest':sf(c.iloc[-1]),'1M %':r1,'3M %':r3,'Contribution':sig*w,'As Of':pd.to_datetime(c.index[-1]).strftime('%Y-%m-%d')})
-    score=float(np.clip(50+50*num/den,0,100)) if den else 50
-    cov=int(round(100*den/sum(x[2] for x in specs)))
+        last=sf(c.iloc[-1]); r1=(last/sf(c.iloc[-22])-1)*100; r3=(last/sf(c.iloc[-64])-1)*100
+        rows.append({'Driver':name,'Latest':last,'1M %':r1,'3M %':r3,'As Of':pd.to_datetime(c.index[-1]).strftime('%Y-%m-%d')})
     df=pd.DataFrame(rows)
-    def v(n,col='3M %'):
-        z=df[df.Driver==n]; return sf(z.iloc[0][col]) if len(z) else np.nan
-    nifty,crude,fx=v('NIFTY 50'),v('Brent Crude'),v('USD/INR'); vr=df[df.Driver=='India VIX']; vix=sf(vr.iloc[0].Latest) if len(vr) else np.nan
-    infl=int(pd.notna(crude) and crude>10)+int(pd.notna(fx) and fx>3); stress=int(pd.notna(nifty) and nifty<-5)+int(pd.notna(vix) and vix>20)
-    if score>=76 and (pd.isna(nifty) or nifty>0) and stress==0: regime='EARLY / RISK-ON'
-    elif score>=68 and stress==0: regime='MID CYCLE / EXPANSION'
-    elif infl>=1 and score>=38: regime='LATE CYCLE / INFLATION-SENSITIVE'
-    elif score<38 or stress>=2: regime='RISK-OFF / CONTRACTION'
-    else: regime='MID-TO-LATE / MIXED'
-    newest=pd.to_datetime(df['As Of']).max() if len(df) else pd.NaT
-    stale=(pd.Timestamp.now(tz=None).normalize()-newest).days>4 if pd.notna(newest) else True
-    return score,regime,cov,df,stale,newest
+    score,regime,cov,attribution,stale,newest=score_macro(df)
+    drivers=df.merge(attribution[['Driver','Contribution','Weight','Available']],on='Driver',how='right') if not attribution.empty else attribution
+    return score,regime,cov,drivers,stale,newest
 
 def tech_score(r):
-    s=str(r.get('Status','')); b=sf(r.get('Breakout %')); vr=sf(r.get('Volume Ratio'))
-    x=95 if s=='Fresh Breakout' else 85 if '<=3M' in s else 62 if s=='Older Breakout' else np.clip(50+(b if pd.notna(b) else -5)*3,20,65)
+    status=str(r.get('Status',''))
+    months=sf(r.get('Months Since Signal'))
+    if status == 'Old Breakout' or (pd.notna(months) and months>12): return 0.0
+    if status == 'Fresh Breakout' or (pd.notna(months) and months == 0): x=95
+    elif pd.notna(months) and months<=3: x=85
+    elif pd.notna(months) and months<=12: x=65
+    else:
+        b=sf(r.get('Breakout %')); x=float(np.clip(50+(b if pd.notna(b) else -5)*3,20,65))
+    vr=sf(r.get('Volume Ratio'))
     if pd.notna(vr): x+=np.clip(vr-1,-1,1)*5
     return float(np.clip(x,0,100))
 
@@ -80,7 +75,7 @@ def policy_score(industry):
     x=str(industry).lower()
     themes={'defence':90,'aerospace':90,'renewable':88,'power':84,'electrical':84,'capital goods':82,'infrastructure':82,'railway':85,'electronics':84,'semiconductor':88,'manufacturing':78,'telecom':72,'healthcare':70,'pharma':70,'bank':62,'financial':62,'auto':72,'chemical':62,'metal':62,'mining':60}
     hits=[v for k,v in themes.items() if k in x]
-    return max(hits) if hits else 55
+    return max(hits) if hits else np.nan
 
 def sector_scores(scan,monthlies):
     out=[]
@@ -91,9 +86,13 @@ def sector_scores(scan,monthlies):
             if m.empty or 'Close' not in m: continue
             c=pd.to_numeric(m.Close,errors='coerce').dropna()
             if len(c)>6: r3.append((c.iloc[-1]/c.iloc[-4]-1)*100); r6.append((c.iloc[-1]/c.iloc[-7]-1)*100)
+        if not r3 and not r6:
+            continue
         a=np.median(r3) if r3 else np.nan; b=np.median(r6) if r6 else np.nan
         recent=(g['Months Since Signal'].fillna(999)<=3).mean()*100
-        mom=np.mean([50+50*np.tanh(a/10) if pd.notna(a) else 50,50+50*np.tanh(b/18) if pd.notna(b) else 50])
+        momentum_scores=[50+50*np.tanh(a/10)] if pd.notna(a) else []
+        if pd.notna(b): momentum_scores.append(50+50*np.tanh(b/18))
+        mom=float(np.mean(momentum_scores))
         out.append({'Industry':ind,'Sector Score':float(np.clip(.75*mom+.25*recent,0,100))})
     return pd.DataFrame(out)
 
@@ -131,6 +130,9 @@ def label(x):
 
 def risk_reason(r):
     risks=[]
+    if pd.isna(r['Macro Score']):risks.append('macro data incomplete')
+    if pd.isna(r['Sector Score']):risks.append('sector strength unavailable')
+    if pd.isna(r['Policy Score']):risks.append('policy mapping unavailable')
     if r['Macro Score']<45:risks.append('weak macro')
     if r['Sector Score']<50:risks.append('weak sector')
     if r['Technical Score']<60:risks.append('weak/no fresh breakout')
@@ -148,16 +150,16 @@ def why(r):
 st.title('🎯 Investment Decision Engine — 0 to 100')
 st.caption('Transparent decision-support: Macro + Policy alignment + Sector strength + strict 26M ATH + Fundamentals + Valuation. Scores prioritise research; they are not buy/sell advice.')
 ms,regime,mcov,drivers,stale,newest=macro_engine(); scan=st.session_state.get('pro_scan',pd.DataFrame()); monthlies=st.session_state.get('pro_monthlies',{}); stored=dict(st.session_state.get('decision_fund',{}))
-a,b,c,d=st.columns(4); a.metric('Macro Score',f'{ms:.0f}/100'); text_metric(b,'Live Regime',regime); c.metric('Macro Coverage',f'{mcov}%'); d.metric('Scan Records',len(scan))
+a,b,c,d=st.columns(4); a.metric('Macro Score',f'{ms:.0f}/100' if pd.notna(ms) else 'N/A'); text_metric(b,'Live Regime',regime); c.metric('Macro Coverage',f'{mcov}%'); d.metric('Scan Records',len(scan))
 updated='N/A' if pd.isna(newest) else newest.strftime('%Y-%m-%d'); st.caption(f'Market data as-of: **{updated}** · page generated: {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")} · macro cache TTL 20 min')
 if stale:st.warning('⚠️ Macro market feed may be stale or incomplete. Treat scores as provisional and verify exchange/broker data.')
-if mcov<80:st.warning(f'⚠️ Macro input coverage is only {mcov}%. Regime confidence is reduced.')
+if pd.isna(ms) or stale or mcov<70:st.warning(f'⚠️ Macro score/regime withheld: coverage {mcov}%, stale={stale}. Other ranking inputs remain separately visible.')
 with st.expander('Why is this Macro Score / Regime?',False):
     if len(drivers): st.dataframe(drivers.sort_values('Contribution',ascending=False),use_container_width=True,hide_index=True)
     st.caption('Regime is recalculated from live/cached market proxies; it is not hard-coded and is not an official GDP-cycle classification.')
 if scan.empty:
     st.warning('पहले Professional Research Lab → 26M ATH Scanner में scan चलाएँ। उसके बाद यह page stock-wise decision ranking बनाएगा।'); st.stop()
-sec=sector_scores(scan,monthlies); smap=sec.set_index('Industry')['Sector Score'].to_dict() if len(sec) else {}; d=scan.copy(); d['Technical Score']=d.apply(tech_score,axis=1); d['Sector Score']=d.Industry.map(smap).fillna(50); d['Policy Score']=d.Industry.apply(policy_score); d['Macro Score']=ms; d['Fundamental Score']=d.Symbol.map(lambda x: stored.get(str(x),{}).get('q',np.nan)); d['Valuation Score']=d.Symbol.map(lambda x: stored.get(str(x),{}).get('v',np.nan)); d['PE']=d.Symbol.map(lambda x: stored.get(str(x),{}).get('pe',np.nan))
+sec=sector_scores(scan,monthlies); smap=sec.set_index('Industry')['Sector Score'].to_dict() if len(sec) else {}; d=scan.copy(); d['Technical Score']=d.apply(tech_score,axis=1); d['Sector Score']=d.Industry.map(smap); d['Policy Score']=d.Industry.apply(policy_score); d['Macro Score']=ms; d['Fundamental Score']=d.Symbol.map(lambda x: stored.get(str(x),{}).get('q',np.nan)); d['Valuation Score']=d.Symbol.map(lambda x: stored.get(str(x),{}).get('v',np.nan)); d['PE']=d.Symbol.map(lambda x: stored.get(str(x),{}).get('pe',np.nan))
 # fixed model weights; unavailable fundamental/valuation weights are redistributed across available components
 weights={'Macro Score':.15,'Policy Score':.10,'Sector Score':.20,'Technical Score':.25,'Fundamental Score':.20,'Valuation Score':.10}
 def final(r):

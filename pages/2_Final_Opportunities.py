@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import yfinance as yf
+from macro_common import score_macro
 
 st.set_page_config(page_title="Final Opportunities", page_icon="⭐", layout="wide")
 
@@ -74,85 +75,23 @@ def _close_series(raw, ticker, total):
 
 @st.cache_data(ttl=1200, show_spinner=False)
 def macro_state():
-    tickers = list(MACRO_ASSETS.values())
+    tickers=list(MACRO_ASSETS.values())
     try:
-        raw = yf.download(
-            tickers=tickers, period="2y", interval="1d", group_by="ticker",
-            auto_adjust=False, threads=True, progress=False, timeout=25,
-        )
+        raw=yf.download(tickers=tickers,period='2y',interval='1d',group_by='ticker',auto_adjust=False,threads=True,progress=False,timeout=25)
     except TypeError:
-        raw = yf.download(
-            tickers=tickers, period="2y", interval="1d", group_by="ticker",
-            auto_adjust=False, threads=True, progress=False,
-        )
+        raw=yf.download(tickers=tickers,period='2y',interval='1d',group_by='ticker',auto_adjust=False,threads=True,progress=False)
     except Exception:
-        raw = pd.DataFrame()
-
-    specs = [
-        ("NIFTY 50", +1, 2.2, 8.0),
-        ("India VIX", -1, 1.7, 15.0),
-        ("USD/INR", -1, 1.5, 4.0),
-        ("Brent Crude", -1, 1.5, 12.0),
-        ("Dollar Index", -1, 1.0, 6.0),
-        ("US 10Y Yield", -1, 1.0, 8.0),
-        ("Gold", -1, 0.6, 12.0),
-    ]
-
-    rows, weighted, weights = [], 0.0, 0.0
-    total_weight = sum(x[2] for x in specs)
-
-    for name, direction, weight, scale in specs:
-        ticker = MACRO_ASSETS[name]
-        c = _close_series(raw, ticker, len(tickers))
-        if len(c) < 25:
-            continue
-        last = safe_float(c.iloc[-1])
-        r1 = (last / safe_float(c.iloc[-22]) - 1) * 100 if len(c) > 22 else np.nan
-        r3 = (last / safe_float(c.iloc[-64]) - 1) * 100 if len(c) > 63 else np.nan
-        if pd.isna(r3):
-            continue
-        impulse = 0.75 * r3 + 0.25 * (r1 if pd.notna(r1) else r3)
-        signal = float(np.tanh(direction * impulse / scale))
-        weighted += signal * weight
-        weights += weight
-        rows.append({
-            "Indicator": name,
-            "Ticker": ticker,
-            "Latest": last,
-            "1M %": r1,
-            "3M %": r3,
-            "Contribution": signal * weight,
-            "As Of": pd.to_datetime(c.index[-1]).strftime("%Y-%m-%d"),
-        })
-
-    score = float(np.clip(5 + 5 * weighted / weights, 0, 10)) if weights else 5.0
-    coverage = int(round(100 * weights / total_weight)) if total_weight else 0
-    df = pd.DataFrame(rows)
-
-    def val(name, col="3M %"):
-        r = df[df["Indicator"] == name]
-        return safe_float(r.iloc[0][col]) if not r.empty else np.nan
-
-    nifty, crude, fx = val("NIFTY 50"), val("Brent Crude"), val("USD/INR")
-    vix_row = df[df["Indicator"] == "India VIX"]
-    vix = safe_float(vix_row.iloc[0]["Latest"]) if not vix_row.empty else np.nan
-    inflation = int(pd.notna(crude) and crude > 10) + int(pd.notna(fx) and fx > 3)
-    stress = int(pd.notna(nifty) and nifty < -5) + int(pd.notna(vix) and vix > 20)
-
-    # This is deliberately dynamic: no hard-coded MID CYCLE label.
-    if score >= 7.6 and (pd.isna(nifty) or nifty > 0) and stress == 0:
-        regime, short = "EARLY / RISK-ON", "EARLY"
-    elif score >= 6.8 and stress == 0:
-        regime, short = "MID CYCLE / EXPANSION", "MID"
-    elif inflation >= 1 and score >= 3.8:
-        regime, short = "LATE CYCLE / INFLATION-SENSITIVE", "LATE"
-    elif score < 3.8 or stress >= 2:
-        regime, short = "RISK-OFF / CONTRACTION", "RISK-OFF"
-    else:
-        regime, short = "MID-TO-LATE / MIXED", "MID→LATE"
-
-    return score, regime, short, coverage, df
-
+        raw=pd.DataFrame()
+    rows=[]
+    for name,ticker in MACRO_ASSETS.items():
+        c=_close_series(raw,ticker,len(tickers))
+        if len(c)<64: continue
+        last=safe_float(c.iloc[-1]); r1=(last/safe_float(c.iloc[-22])-1)*100; r3=(last/safe_float(c.iloc[-64])-1)*100
+        rows.append({'Indicator':name,'Ticker':ticker,'Latest':last,'1M %':r1,'3M %':r3,'As Of':pd.to_datetime(c.index[-1]).strftime('%Y-%m-%d')})
+    df=pd.DataFrame(rows)
+    score,regime,coverage,attribution,stale,newest=score_macro(df)
+    short={'EARLY / RISK-ON':'EARLY','MID CYCLE / EXPANSION':'MID','LATE CYCLE / INFLATION-SENSITIVE':'LATE','RISK-OFF / CONTRACTION':'RISK-OFF','MID-TO-LATE / MIXED':'MID→LATE'}.get(regime,regime)
+    return (score/10 if pd.notna(score) else np.nan),regime,short,coverage,df
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fundamental_quality(ticker):
@@ -240,7 +179,9 @@ def technical_score(row):
     elif pd.notna(months_since) and months_since <= 12:
         base = 7.0
     elif "Old" in status or "Older" in status:
-        base = 5.5
+        return 0.0
+    elif pd.notna(months_since):
+        return 0.0
     else:
         base = max(2.5, 5 + (breakout if pd.notna(breakout) else -2) / 3)
 
@@ -318,11 +259,14 @@ def build_ranking(scan, monthlies, macro_score, fund_scores, pe_scores):
         m6 = float(np.median(r6)) if r6 else np.nan
         recent = int((g["Months Since Signal"].fillna(999) <= 3).sum())
         breadth = 100 * recent / max(1, len(g))
-        mom = np.mean([
-            5 + 5 * np.tanh(m3 / 10) if pd.notna(m3) else 5,
-            5 + 5 * np.tanh(m6 / 18) if pd.notna(m6) else 5,
-        ])
-        sec_score = float(np.clip(0.75 * mom + 0.25 * (breadth / 10), 0, 10))
+        momentum_values = []
+        if pd.notna(m3): momentum_values.append((5 + 5 * np.tanh(m3 / 10), .5))
+        if pd.notna(m6): momentum_values.append((5 + 5 * np.tanh(m6 / 18), .5))
+        if not momentum_values:
+            sec_score = np.nan
+        else:
+            momentum_score = sum(v*w for v,w in momentum_values) / sum(w for _,w in momentum_values)
+            sec_score = float(np.clip(0.75 * momentum_score + 0.25 * (breadth / 10), 0, 10))
         sector_rows.append({
             "Industry": ind,
             "3M Momentum %": m3,
@@ -337,7 +281,7 @@ def build_ranking(scan, monthlies, macro_score, fund_scores, pe_scores):
     smap = sectors.set_index("Industry")["Sector Score"].to_dict() if not sectors.empty else {}
 
     d["Technical Score"] = d.apply(technical_score, axis=1)
-    d["Sector Score"] = d["Industry"].map(smap).fillna(5.0)
+    d["Sector Score"] = d["Industry"].map(smap)
     d["Macro Score"] = macro_score
     if "Policy Score" not in d.columns:
         d["Policy Score"] = np.nan
@@ -368,7 +312,7 @@ pe_scores = dict(st.session_state.get("pro_final_pe_scores", {}))
 
 now_utc = datetime.now(timezone.utc)
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("Macro Score", f"{mscore:.1f}/10")
+c1.metric("Macro Score", f"{mscore:.1f}/10" if pd.notna(mscore) else "N/A")
 c2.metric("Dynamic Macro Regime", short_regime, help=regime)
 c3.metric("Macro Feed Coverage", f"{coverage}%")
 c4.metric("Scanned Stocks", len(scan))
@@ -376,8 +320,8 @@ st.caption(
     f"Full regime: **{regime}** · Macro cache: 20 minutes · Dashboard checked {now_utc.strftime('%Y-%m-%d %H:%M UTC')}"
 )
 
-if coverage < 70:
-    st.warning("Macro data coverage is below 70%. Treat the macro score and regime as low-confidence until feeds recover.")
+if coverage < 70 or pd.isna(mscore):
+    st.warning("Macro score/regime withheld until at least five fresh macro feeds, including NIFTY 50, India VIX and USD/INR, are available.")
 
 if scan.empty:
     st.warning("पहले **Professional Research Lab → 26M ATH Scanner** में scan चलाएँ। यह page उसी verified scan को rank करता है।")
