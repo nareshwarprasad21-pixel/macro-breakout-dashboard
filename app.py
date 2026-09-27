@@ -154,8 +154,8 @@ def breadth_signal(value_50, value_200):
 def render_market_breadth(universe):
     st.subheader("📊 NIFTY 50 vs NSE Market Breadth")
     st.caption(
-        "NSE breadth proxy: current NIFTY 500 constituents. Red = अपने 50-day SMA के ऊपर stocks; "
-        "Black = अपने 200-day SMA के ऊपर stocks; dotted line = 50% decision level."
+        "Daily timeframe: हर point एक NSE trading session है. NSE breadth proxy: current NIFTY 500 constituents. "
+        "Red = अपने 50-day SMA के ऊपर stocks; cyan = अपने 200-day SMA के ऊपर stocks; dotted line = 50% decision level."
     )
     try:
         with st.spinner("NIFTY 500 market breadth calculate हो रही है…"):
@@ -176,7 +176,7 @@ def render_market_breadth(universe):
     c2.metric("⚫ Above 200-SMA", f"{p200:.1f}%", f"{p200-float(prior['Above 200-SMA %']):+.1f} pp")
     c3.metric("Market Breadth Signal", status)
     st.info(f"**आज का आसान अर्थ:** {explanation}")
-    chart = breadth.tail(320).copy()
+    chart = breadth.tail(504).copy()
     fig = go.Figure()
     if "NIFTY 50" in chart.columns:
         fig.add_trace(go.Scatter(x=chart.index, y=chart["NIFTY 50"], name="NIFTY 50",
@@ -191,7 +191,19 @@ def render_market_breadth(universe):
         height=520, hovermode="x unified", margin=dict(l=10, r=10, t=35, b=10),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
         yaxis=dict(title="NSE stocks above SMA (%)", range=[0, 100], ticksuffix="%"),
-        yaxis2=dict(title="NIFTY 50", overlaying="y", side="right", showgrid=False), xaxis=dict(title="Date"))
+        yaxis2=dict(title="NIFTY 50", overlaying="y", side="right", showgrid=False),
+        xaxis=dict(
+            title="Date · Daily trading sessions",
+            rangeselector=dict(buttons=[
+                dict(count=1, label="1M", step="month", stepmode="backward"),
+                dict(count=3, label="3M", step="month", stepmode="backward"),
+                dict(count=6, label="6M", step="month", stepmode="backward"),
+                dict(count=1, label="1Y", step="year", stepmode="backward"),
+                dict(count=2, label="2Y", step="year", stepmode="backward"),
+                dict(step="all", label="All"),
+            ]),
+        ),
+    )
     st.plotly_chart(fig, use_container_width=True)
     st.markdown("#### 50% line को कैसे पढ़ें")
     guide = pd.DataFrame([
